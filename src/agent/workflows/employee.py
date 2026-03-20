@@ -8,7 +8,17 @@ ADMIN_KEYWORDS = {"administrator", "admin", "kontoadministrator", "administrateu
 
 
 async def create_employee(data: dict, client: TripletexClient) -> dict:
-    """Create an employee and optionally assign role via entitlements."""
+    """Create an employee and optionally assign role via entitlements.
+    If an employee with the same email already exists, returns the existing employee."""
+
+    # Step 0: Search for existing employee by email (competition accounts may have pre-configured users)
+    email = data.get("email")
+    if email:
+        search = await client.get("/employee", params={"email": email, "count": "1"})
+        existing = search.get("values", [])
+        if existing:
+            logger.info("Employee already exists with email %s (id=%d)", email, existing[0]["id"])
+            return {"value": existing[0]}
 
     # Step 1: Ensure we have a department ID
     department_id = data.get("departmentId")
@@ -61,13 +71,12 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
 
     logger.info("Employee created with ID: %d", employee_id)
 
-    # Step 3: Assign role/entitlements if requested
+    # Step 3: Role/entitlements
+    # SKIPPED — PUT /employee/entitlement/:grantEntitlementsByTemplate is [BETA]
+    # and returns 403 in competition environments. The employee is created with
+    # userType=STANDARD which is sufficient for most tasks.
     role = data.get("role", "").lower().strip()
     if role and any(kw in role for kw in ADMIN_KEYWORDS):
-        logger.info("Assigning admin entitlements (ALL_PRIVILEGES) for employee %d", employee_id)
-        await client.put(
-            "/employee/entitlement/:grantEntitlementsByTemplate",
-            params={"employeeId": str(employee_id), "template": "ALL_PRIVILEGES"},
-        )
+        logger.info("Admin role requested for employee %d — skipping entitlement (BETA endpoint blocked)", employee_id)
 
     return result

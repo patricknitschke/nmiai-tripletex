@@ -91,7 +91,8 @@ def search_endpoints(keyword: str) -> str:
             if method not in methods:
                 continue
             summary = methods[method].get("summary", "")
-            results.append(f"  {method.upper()} {path} — {summary}")
+            beta = "⚠️ [BETA — BLOCKED in competition] " if "[BETA]" in summary else ""
+            results.append(f"  {beta}{method.upper()} {path} — {summary}")
 
     if not results:
         return f"No endpoints found matching '{keyword}'."
@@ -117,7 +118,9 @@ def get_endpoint(path: str, method: str = "post") -> str:
         return f"{method.upper()} {path} not found. Available methods: {', '.join(available)}"
 
     op = path_data[method]
-    lines = [f"{method.upper()} {path}", f"  Summary: {op.get('summary', '')}"]
+    summary = op.get('summary', '')
+    beta_warning = "\n  ⚠️ WARNING: This is a [BETA] endpoint — BLOCKED in competition environments. Do NOT use." if "[BETA]" in summary else ""
+    lines = [f"{method.upper()} {path}", f"  Summary: {summary}{beta_warning}"]
 
     # Query parameters
     params = op.get("parameters", [])

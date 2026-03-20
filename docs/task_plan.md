@@ -153,8 +153,41 @@ src/agent/
   api_spec.py              # OpenAPI lookup module (plain Python)
 ```
 
-### Phase 11: Specialist Domain Agents
-Build AFTER Phase 10 — each specialist inherits the `lookup_api` tool as failsafe.
+### Phase 11: Hybrid Mode — Chief Plans, Senior Executes
+Combine the Chief's strategic planning with the Senior's direct execution.
+Eliminates the communication overhead that killed Chief mode performance.
+
+**Evidence from competition testing (same Spanish invoice+payment prompt):**
+
+| | Senior mode | Chief mode |
+|---|---|---|
+| Time | **20.2s** | 88.8s |
+| Iterations | **6** | 10 |
+| API errors | **1** | 3 |
+| Completed? | **Yes** | No — invoice failed 3x, payment never attempted |
+
+Chief's planning was actually good (correct 2-step plan), but sub-agents wasted time
+on communication, couldn't see each other's results, and got stuck on VAT errors.
+
+**Architecture:**
+```
+POST /solve
+  → Chief THINKS + produces plan (1 LLM call, ~3s)
+  → Plan injected as preamble into Senior's system prompt
+  → Senior executes with: original prompt + Chief's thinking + plan + all tools
+  → Senior follows the plan but can deviate if needed
+```
+
+**Implementation:**
+- [ ] **11a: New mode "hybrid"** in orchestrator.py — Chief plans, Senior executes with plan
+- [ ] **11b: Inject Chief thinking into Senior prompt** — add plan as preamble section
+- [ ] **11c: Update AGENT_MODE** — support "senior", "hybrid", "chief"
+- [ ] **11d: Test + compare** — run same prompts across all 3 modes
+
+**Config:** `AGENT_MODE=senior | hybrid | chief`
+
+### Phase 12: Specialist Domain Agents
+Build AFTER Phase 11 — each specialist inherits the `lookup_api` tool as failsafe.
 Build incrementally: start with Invoice Specialist (highest value), add others one by one.
 
 **Evidence from competition that specialists would help:**
@@ -199,7 +232,7 @@ src/agent/agents/
     general.py                # Customer, supplier, product (simple CRUD)
 ```
 
-### Phase 12: Tier 3 Workflows + Iteration
+### Phase 13: Tier 3 Workflows + Iteration
 - [ ] Complex scenarios (opens Saturday — wait and assess complexity)
 - [ ] Iterate based on leaderboard scores
 

@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 
 from ..tripletex import TripletexClient
 
@@ -36,8 +37,7 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
         payload["number"] = str(data["number"])
     if data.get("description"):
         payload["description"] = data["description"]
-    if data.get("startDate"):
-        payload["startDate"] = data["startDate"]
+    payload["startDate"] = data.get("startDate", date.today().isoformat())
     if data.get("endDate"):
         payload["endDate"] = data["endDate"]
     if data.get("isInternal") is not None:

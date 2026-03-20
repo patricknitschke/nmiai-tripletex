@@ -78,15 +78,16 @@ async def tool_use_loop(
     tools: list[dict],
     execute_tool,
     max_iterations: int = 20,
+    deadline: float | None = None,
 ) -> dict:
-    """Run a tool-use agent loop. Returns when the model stops calling tools."""
+    """Run a tool-use agent loop. Returns when the model stops calling tools or deadline is reached."""
     provider, model = _get_config()
     logger.info("LLM tool loop: provider=%s, model=%s", provider, model)
 
     if provider == "anthropic":
-        return await _anthropic_tool_loop(system, user_content, tools, execute_tool, model, max_iterations)
+        return await _anthropic_tool_loop(system, user_content, tools, execute_tool, model, max_iterations, deadline)
     elif provider == "vertex":
-        return await _vertex_tool_loop(system, user_content, tools, execute_tool, model, max_iterations)
+        return await _vertex_tool_loop(system, user_content, tools, execute_tool, model, max_iterations, deadline)
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {provider}. Use 'anthropic' or 'vertex'.")
 
@@ -98,13 +99,19 @@ async def _anthropic_tool_loop(
     execute_tool,
     model: str,
     max_iterations: int,
+    deadline: float | None = None,
 ) -> dict:
     import anthropic
+    import time
 
     client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     messages = [{"role": "user", "content": user_content}]
 
     for iteration in range(max_iterations):
+        if deadline and time.time() > deadline:
+            logger.warning("[Tool loop] Deadline reached, stopping early after %d iterations", iteration)
+            return {"status": "completed", "iterations": iteration, "warning": "deadline"}
+
         logger.info("[Tool loop iteration %d] Calling %s...", iteration + 1, model)
 
         response = await client.messages.create(
@@ -149,7 +156,9 @@ async def _vertex_tool_loop(
     execute_tool,
     model: str,
     max_iterations: int,
+    deadline: float | None = None,
 ) -> dict:
+    import time
     from google import genai
 
     project = os.environ.get("GCP_PROJECT_ID")
@@ -162,6 +171,10 @@ async def _vertex_tool_loop(
     contents = [genai.types.Content(role="user", parts=parts)]
 
     for iteration in range(max_iterations):
+        if deadline and time.time() > deadline:
+            logger.warning("[Tool loop] Deadline reached, stopping early after %d iterations", iteration)
+            return {"status": "completed", "iterations": iteration, "warning": "deadline"}
+
         logger.info("[Tool loop iteration %d] Calling %s...", iteration + 1, model)
 
         response = await client.aio.models.generate_content(

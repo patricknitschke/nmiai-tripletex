@@ -192,6 +192,7 @@ async def run_senior_accountant(
     prompt: str,
     files: list,
     client: TripletexClient,
+    deadline: float | None = None,
 ) -> dict:
     """Run the Senior Accountant — single agent, fast path."""
 
@@ -246,4 +247,5 @@ async def run_senior_accountant(
         tools=TOOLS,
         execute_tool=execute_tool,
         max_iterations=15,
+        deadline=deadline,
     )

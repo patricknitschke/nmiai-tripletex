@@ -72,9 +72,21 @@ async def _ensure_customer(data: dict, client: TripletexClient) -> int | None:
     return None
 
 
-async def _lookup_vat_type_by_rate(rate: float, client: TripletexClient, _cache: dict = {}) -> int | None:
-    """Find output (Utgående) VAT type ID by percentage rate (e.g. 25, 15, 0). Results are cached."""
-    if not _cache:
+# Per-request VAT cache — reset for each new TripletexClient instance
+_vat_cache: dict = {}
+_vat_cache_client_id: int | None = None
+
+
+async def _lookup_vat_type_by_rate(rate: float, client: TripletexClient) -> int | None:
+    """Find output (Utgående) VAT type ID by percentage rate (e.g. 25, 15, 0). Cached per client."""
+    global _vat_cache, _vat_cache_client_id
+
+    # Reset cache if client changed (new competition submission = new client)
+    if id(client) != _vat_cache_client_id:
+        _vat_cache = {}
+        _vat_cache_client_id = id(client)
+
+    if not _vat_cache:
         result = await client.get("/ledger/vatType", params={"count": "100"})
         for vt in result.get("values", []):
             pct = vt.get("percentage")
@@ -83,10 +95,10 @@ async def _lookup_vat_type_by_rate(rate: float, client: TripletexClient, _cache:
             if pct is not None and "utgående" in name.lower():
                 # Prefer simple numbered codes (3, 31, 33) over special ones (UTTAK, TAP, etc.)
                 number = vt.get("number", "")
-                if pct not in _cache or number.isdigit():
-                    _cache[pct] = vt["id"]
-        logger.info("Cached %d output VAT types: %s", len(_cache), _cache)
-    return _cache.get(rate)
+                if pct not in _vat_cache or number.isdigit():
+                    _vat_cache[pct] = vt["id"]
+        logger.info("Cached %d output VAT types: %s", len(_vat_cache), _vat_cache)
+    return _vat_cache.get(rate)
 
 
 async def _build_order_lines(lines: list[dict], client: TripletexClient) -> list[dict]:

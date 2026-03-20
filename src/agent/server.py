@@ -42,10 +42,11 @@ async def solve(request: SolveRequest):
     )
 
     try:
-        # Multi-agent orchestrator: Chief plans → sub-agents execute → Chief adapts
+        # 100s deadline — leaves 20s buffer before 120s cloudflare timeout
+        deadline = start + 100.0
         logger.info("-" * 40)
-        logger.info("Starting multi-agent orchestrator...")
-        result = await solve_task(request.prompt, request.files, client)
+        logger.info("Starting orchestrator (deadline in 100s)...")
+        result = await solve_task(request.prompt, request.files, client, deadline=deadline)
 
     except Exception as e:
         logger.exception("TASK FAILED with error: %s", e)

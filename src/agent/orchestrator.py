@@ -26,6 +26,7 @@ async def solve_task(
     prompt: str,
     files: list,
     client: TripletexClient,
+    deadline: float | None = None,
 ) -> dict:
     """Route to the right execution mode."""
     logger.info("Agent mode: %s", AGENT_MODE)
@@ -33,7 +34,7 @@ async def solve_task(
     if AGENT_MODE == "chief":
         return await _run_chief_mode(prompt, files, client)
     else:
-        return await run_senior_accountant(prompt, files, client)
+        return await run_senior_accountant(prompt, files, client, deadline=deadline)
 
 
 async def _run_chief_mode(
