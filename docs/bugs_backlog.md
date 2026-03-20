@@ -50,17 +50,21 @@
 - **Date seen:** 2026-03-20
 
 ### W3: Time Registration
-- **Example prompt (PT):** `"Registe 17 horas para Carolina Pereira (carolina.pereira@example.org) na atividade 'Testing' do projeto 'Auditoria de segurança' para Estrela Lda (org. nº 834219662). Taxa horária: 1400 NOK/h."`
-- **What's needed:** Create employee → Create project → Register timesheet entries
-- **API endpoints:** POST /timesheet/entry
-- **Status:** T3 task, not built
+- **Example prompts:**
+  - (PT) `"Registe 17 horas para Carolina Pereira (carolina.pereira@example.org) na atividade 'Testing' do projeto 'Auditoria de segurança' para Estrela Lda (org. nº 834219662). Taxa horária: 1400 NOK/h."`
+  - (PT) `"Registe 4 horas para Maria Ferreira (maria.ferreira@example.org) na atividade 'Utvikling' do projeto 'Desenvolvimento de app' para Estrela Lda (org. nº 909621682). Taxa horária: 1050 NOK/h."`
+- **What's needed:** Create employee → Create customer → Create project → Create activity → Register timesheet entries
+- **API endpoints:** POST /timesheet/entry, project activities
+- **Status:** T3 task, not built. Chief correctly plans prerequisites but falls back for time registration.
 - **Date seen:** 2026-03-20
 
 ### W4: Project Invoice
-- **Example prompt (PT):** `"Gere uma fatura de projeto ao cliente com base nas horas registadas."`
-- **What's needed:** Generate invoice from project hours
-- **API endpoints:** POST /invoice/projectInvoice
-- **Status:** T3 task, not built
+- **Example prompts:**
+  - (PT) `"Gere uma fatura de projeto ao cliente com base nas horas registadas."`
+  - Often combined with W3: `"...Gere uma fatura de projeto ao cliente com base nas horas registadas."`
+- **What's needed:** Generate invoice from project's registered billable hours
+- **API endpoints:** POST /invoice/projectInvoice or similar
+- **Status:** T3 task, not built. Usually appears as last step after W3.
 - **Date seen:** 2026-03-20
 
 ### W5: Custom Accounting Dimensions
@@ -86,6 +90,7 @@
 |--------|------|-------|------|-----------|--------|-------|
 | Invoice: Prairie SARL, 3 product lines (FR) | FR | gemini-3.1-pro | 31.7s | 9 | 0 | 3 products with different VAT rates, all resolved correctly |
 | Invoice: Bergwerk GmbH + send (DE) | DE | gemini-2.5-flash | 27.8s | 6 | 0 | Single line, sendToCustomer=true handled |
+| Project: Montaña SL fixed price + partial invoice (ES) | ES | gemini-2.5-flash | 23.9s | 9 | 0 | 4-step plan, all 201s |
 
 ### Failures
 | Prompt | Lang | Model | Time | API Calls | Errors | Bug | Notes |
@@ -93,6 +98,25 @@
 | Payroll: Fernando López (ES) | ES | gemini-3.1-pro | — | 2 | 1 | B1 | Created employee OK, then lookup_api crashed |
 | Dimensions + voucher: Kostsenter (EN) | EN | gemini-3.1-pro | — | 0 | 1 | B1 | lookup_api crashed immediately |
 | Payment: Tindra AS (NO) | NO | gemini-2.5-flash | 5.9s | 0 | 0 | B3 | Chief gave up ("invoice number missing"), 0 API calls |
+| Order→Invoice→Payment: Waldstein GmbH (DE) | DE | gemini-3.1-pro | 47.0s | 10 | 0 | B4 | Step 1 specialist did invoice+payment, Step 2 double-paid → amountOutstanding: -63500 |
+| Time reg + project invoice: Maria Ferreira (PT) | PT | gemini-3.1-pro | 100.1s | 4 | 0 | W3+W4 | Steps 1-3 OK, Step 4 spiraled 9 iterations on lookup_api, hit deadline |
+
+### B4: Specialists duplicate work — each sees full prompt (FIXED)
+- **Status:** OPEN
+- **Impact:** HIGH — creates duplicate resources (2 projects), wastes time (86s for a 20s task)
+- **Symptom:** Step 1 general specialist executed all 3 workflows itself. Steps 2+3 ran anyway → duplicate project.
+- **Root cause:** Each specialist receives the full original prompt, so smart specialists do more than their assigned step.
+- **Example prompt (FR):** `"Créez le projet 'Migration Étoile' lié au client Étoile SARL (nº org. 964531161). Le chef de projet est Arthur Dubois (arthur.dubois@example.org)."`
+- **Expected:** 1 project. **Actual:** 2 projects (numbers "1" and "2"). 86.3s, 7 API calls across 3 specialist loops.
+- **Fix:** Replaced specialist step-by-step routing with Senior-with-plan-preamble. Chief plans → plan injected into Senior's system prompt → Senior executes everything in one loop. No duplication, no multi-loop overhead.
+- **Date:** 2026-03-20, fixed 2026-03-21
+
+### B5: Customer email set as invoiceEmail but not email (FIXED)
+- **Status:** FIXED
+- **Impact:** MEDIUM — scoring checks `email` field which was empty
+- **Symptom:** Prompt says "E-post: faktura@skogheim.no", LLM maps to `invoiceEmail` because of "faktura@" prefix. General `email` field left empty.
+- **Fix:** Customer workflow now copies `invoiceEmail` to `email` when `email` isn't explicitly set.
+- **Date:** 2026-03-21
 
 ### Partial / Potential Issues
 | Prompt | Lang | Model | Time | API Calls | Errors | Notes |

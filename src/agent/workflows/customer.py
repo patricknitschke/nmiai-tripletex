@@ -7,15 +7,20 @@ logger = logging.getLogger("agent.workflows.customer")
 
 async def create_customer(data: dict, client: TripletexClient) -> dict:
     """Create a customer in Tripletex."""
+    # If isSupplier is set but isCustomer isn't explicitly provided, default isCustomer to false
+    default_is_customer = not data.get("isSupplier", False)
     payload = {
         "name": data.get("name", ""),
-        "isCustomer": data.get("isCustomer", True),
+        "isCustomer": data.get("isCustomer", default_is_customer),
     }
 
     if data.get("email"):
         payload["email"] = data["email"]
     if data.get("invoiceEmail"):
         payload["invoiceEmail"] = data["invoiceEmail"]
+        # Also set general email if not explicitly provided
+        if not data.get("email"):
+            payload["email"] = data["invoiceEmail"]
     if data.get("phone") or data.get("phoneNumber"):
         payload["phoneNumber"] = data.get("phone") or data.get("phoneNumber")
     if data.get("organizationNumber"):

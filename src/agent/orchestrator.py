@@ -2,19 +2,17 @@
 Orchestrator — routes tasks to the right execution mode.
 
 Modes:
-  - "senior": Single Senior Accountant agent (fast path, default)
-  - "hybrid": Chief plans (1 LLM call) → specialists execute each step
+  - "senior": Single Senior Accountant agent (no planning, direct execution)
+  - "hybrid": Chief plans (1 LLM call) → Senior executes with plan as context (default)
 
 Set via AGENT_MODE env var. Defaults to "hybrid".
 """
 
-import json
 import logging
 import os
 
 from .agents import chief_plan
 from .agents.senior import run_senior_accountant
-from .agents.specialists import get_specialist
 from .tripletex import TripletexClient
 
 logger = logging.getLogger("agent.orchestrator")
@@ -43,7 +41,7 @@ async def _run_hybrid_mode(
     client: TripletexClient,
     deadline: float | None = None,
 ) -> dict:
-    """Hybrid mode: Chief plans (1 LLM call), specialists execute each step."""
+    """Hybrid mode: Chief plans (1 LLM call), Senior executes with plan as context."""
 
     # Stage 1: Chief produces a strategic plan
     logger.info("=" * 40)
@@ -55,7 +53,6 @@ async def _run_hybrid_mode(
         return await run_senior_accountant(prompt, files, client, deadline=deadline)
 
     # Safety net: detect if Chief "gave up" instead of planning
-    # Signs: single fallback step with language like "missing", "can't", "provide", "not available"
     if len(steps) == 1 and steps[0].get("suggested_workflow") == "fallback":
         task_text = steps[0].get("task", "").lower()
         give_up_signals = ["missing", "can't proceed", "cannot proceed", "not available",
@@ -71,53 +68,22 @@ async def _run_hybrid_mode(
     if thinking:
         logger.info("Chief thinking: %s", thinking[:300])
 
-    # Stage 2: Route each step to the right specialist
-    completed_steps = []
-
+    # Stage 2: Build plan preamble and let Senior execute in one loop
+    plan_lines = []
+    if thinking:
+        plan_lines.append(f"**Reasoning:** {thinking}")
+        plan_lines.append("")
+    plan_lines.append("**Steps to execute (in order):**")
     for i, step in enumerate(steps, 1):
-        task_desc = step.get("task", "")
-        suggested_wf = step.get("suggested_workflow", "fallback")
+        wf = step.get("suggested_workflow", "fallback")
+        task = step.get("task", "")
+        plan_lines.append(f"{i}. [{wf}] {task}")
+    plan_lines.append("")
+    plan_lines.append("Follow this plan. Pass IDs from earlier steps to later ones. "
+                      "Do NOT repeat steps that were already completed by a previous workflow call.")
+    preamble = "\n".join(plan_lines)
 
-        # Get the right specialist for this step
-        specialist_fn = get_specialist(suggested_wf)
-        specialist_name = specialist_fn.__module__.rsplit(".", 1)[-1]
-
-        logger.info("-" * 40)
-        logger.info("STEP %d/%d: [%s specialist] %s", i, len(steps), specialist_name, task_desc)
-
-        # Build prior results context from completed steps
-        prior_results = None
-        if completed_steps:
-            prior_results = json.dumps(
-                [{"step": s["task"], "result": s.get("key_results", {})}
-                 for s in completed_steps],
-                indent=2,
-            )
-
-        # Run specialist
-        result = await specialist_fn(
-            task_description=task_desc,
-            prompt=prompt,
-            files=files,
-            client=client,
-            deadline=deadline,
-            prior_results=prior_results,
-        )
-
-        # Extract key results for passing to next step
-        key_results = result.get("workflow_result", {})
-        completed_steps.append({
-            "task": task_desc,
-            "specialist": specialist_name,
-            "iterations": result.get("iterations", 0),
-            "key_results": key_results,
-        })
-
-        logger.info("Step %d completed: %s specialist, %d iterations, results: %s",
-                     i, specialist_name, result.get("iterations", 0), json.dumps(key_results)[:200])
-
-    logger.info("=" * 40)
-    logger.info("HYBRID MODE: All %d steps complete", len(completed_steps))
-    return {"status": "completed", "steps_executed": len(completed_steps)}
+    logger.info("HYBRID MODE: Senior executing with plan...")
+    return await run_senior_accountant(prompt, files, client, deadline=deadline, plan_preamble=preamble)
 
 

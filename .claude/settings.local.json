@@ -86,7 +86,13 @@
       "Bash(.venv/bin/python -c \"from src.agent.agents.specialists import SPECIALIST_ROUTING; print\\(''Specialists:'', len\\(SPECIALIST_ROUTING\\), ''routes''\\); [print\\(f''  {k} → {v.__module__.rsplit\\(\"\".\"\",1\\)[-1]}''\\) for k,v in SPECIALIST_ROUTING.items\\(\\)]\")",
       "Bash(.venv/bin/python -c \"from src.agent.orchestrator import solve_task; from src.agent.agents.chief import chief_plan; print\\(''OK''\\)\")",
       "Bash(ls /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/src/agent/agents/specialists/*.py)",
-      "Bash(.venv/bin/python -c \"from src.agent.orchestrator import solve_task, AGENT_MODE; print\\(''Mode:'', AGENT_MODE\\); print\\(''OK''\\)\")"
+      "Bash(.venv/bin/python -c \"from src.agent.orchestrator import solve_task, AGENT_MODE; print\\(''Mode:'', AGENT_MODE\\); print\\(''OK''\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''timesheet''\\)[:500]\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''POST /timesheet/entry''\\)[:800]\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''POST /timesheet/entry''\\)\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''projectInvoice''\\)[:600]\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; r = lookup\\(''project''\\); lines = [l for l in r.split\\(''\\\\n''\\) if ''invoice'' in l.lower\\(\\) or ''Invoice'' in l]; print\\(''\\\\n''.join\\(lines\\) if lines else ''none''\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; r = lookup\\(''invoice''\\); lines = [l for l in r.split\\(''\\\\n''\\) if ''project'' in l.lower\\(\\)]; print\\(''\\\\n''.join\\(lines\\) if lines else ''none''\\)\")"
     ]
   },
   "enabledMcpjsonServers": [
