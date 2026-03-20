@@ -34,7 +34,10 @@ POST /solve (100s deadline)
 - Safety net: bad Chief plans (e.g. "can't proceed") are detected and bypassed
 
 ## Current Phase
-Deploying v09 with B1+B3 fixes + specialist routing. Dead code (chief mode, sub_agent) removed. Next: monitor scores, then T3 workflows (Saturday).
+Deploying v09/v10 with B1-B5 fixes. Hybrid mode now uses Senior-with-preamble (B4 fix). Dead code removed. Next: monitor scores, build T3 workflows (W1-W6).
+
+**Bugs fixed this session:** B1 (Dockerfile), B3 (Chief fresh-env), B4 (specialist duplication → Senior-with-preamble), B5 (customer email fallback), isCustomer default for suppliers.
+**See** `docs/bugs_backlog.md` for full details + competition test results.
 
 ## Phases
 
@@ -149,8 +152,14 @@ src/agent/agents/specialists/
   ap.py                     # Supplier invoices, vouchers (placeholder)
 ```
 
-### Phase 13: Tier 3 Workflows + Iteration
-- [ ] Complex scenarios (opens Saturday — wait and assess complexity)
+### Phase 13: Missing Workflows (T2/T3)
+Priority order based on competition logs:
+- [ ] **W3: Time registration** — POST /timesheet/entry (seen in PT prompts, agent spiraled 9 iterations)
+- [ ] **W4: Project invoice** — from registered hours (always paired with W3)
+- [ ] **W6: Manual voucher** — POST /ledger/voucher (needed for AP + dimensions tasks)
+- [ ] **W2: Supplier invoice (AP)** — voucher with debit/credit postings
+- [ ] **W1: Payroll** — salary API endpoints unknown
+- [ ] **W5: Custom dimensions** — dimension API endpoints unknown
 - [ ] Iterate based on leaderboard scores
 
 ## Key Decisions

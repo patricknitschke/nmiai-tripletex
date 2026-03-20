@@ -1,4 +1,4 @@
-gcloud run deploy pining-for-the-woods-tripletex-v09 \
+gcloud run deploy pining-for-the-woods-tripletex-v10 \
   --source . \
   --region europe-north1 \
   --allow-unauthenticated \
