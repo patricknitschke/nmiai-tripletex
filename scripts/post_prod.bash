@@ -1,4 +1,4 @@
-curl -X POST https://pining-for-the-woods-tripletex-v03-370009516620.europe-north1.run.app/solve \
+curl -X POST https://pining-for-the-woods-tripletex-v08-370009516620.europe-north1.run.app/solve \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "Registrer noen nye kunder, Per johansen. per.joh@google.com. 46501234. og Kari Nordmann, kari.nordmann@google.com. 46501235.",
