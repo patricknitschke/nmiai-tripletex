@@ -33,6 +33,10 @@ async def solve_task(
         logger.warning("Chief produced empty plan, falling back")
         steps = [{"task": "Complete the accounting task", "suggested_workflow": "fallback"}]
 
+    # Log the full plan
+    for i, step in enumerate(steps, 1):
+        logger.info("  PLAN STEP %d: [%s] %s", i, step.get("suggested_workflow", "?"), step.get("task", ""))
+
     # Build persistent Chief memory
     chief_memory = f"Thinking: {thinking}\n\nPlan: {json.dumps(steps, indent=2)}" if thinking else f"Plan: {json.dumps(steps, indent=2)}"
 

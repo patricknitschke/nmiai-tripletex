@@ -172,11 +172,9 @@ async def _vertex_tool_loop(
             ),
         )
 
-        # Check for function calls
-        function_calls = [
-            part for part in response.candidates[0].content.parts
-            if part.function_call
-        ]
+        # Check for function calls (guard against empty/blocked responses)
+        parts = response.candidates[0].content.parts if response.candidates and response.candidates[0].content and response.candidates[0].content.parts else []
+        function_calls = [part for part in parts if part.function_call]
 
         if not function_calls:
             logger.info("[Tool loop] Done after %d iterations", iteration + 1)

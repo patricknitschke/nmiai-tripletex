@@ -235,7 +235,13 @@ async def chief_review(
         review = parse_json(raw)
         should_continue = review.get("continue", True)
         adjusted = review.get("adjusted_steps", [])
+        if not should_continue:
+            logger.info("Chief review decision: STOP (task complete)")
+        elif adjusted:
+            logger.info("Chief review decision: CONTINUE with %d adjusted steps", len(adjusted))
+        else:
+            logger.info("Chief review decision: CONTINUE as planned")
         return should_continue, adjusted if adjusted else remaining_steps
     except Exception:
-        logger.warning("Failed to parse Chief review, continuing with original plan")
+        logger.warning("Failed to parse Chief review (raw: %s), continuing with original plan", raw[:200])
         return True, remaining_steps

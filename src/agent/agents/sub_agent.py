@@ -217,6 +217,8 @@ async def run_sub_agent(
 
     # Conversation memory for this step's Chief ↔ sub-agent pair
     conversation_log: list[dict] = []
+    # Tool call trace for post-mortem analysis
+    tool_trace: list[dict] = []
 
     async def execute_tool(name: str, input_data: dict) -> dict:
         if name == "ask_chief":
@@ -224,26 +226,33 @@ async def run_sub_agent(
             logger.info("Sub-agent asks Chief: %s", question)
             answer = await chief_answer(question, prompt, files, conversation_log, chief_memory)
             conversation_log.append({"question": question, "answer": answer})
+            tool_trace.append({"tool": "ask_chief", "ok": True})
             return {"answer": answer}
 
         if name == "execute_workflow":
             wf_name = input_data.get("workflow_name", "")
             data = input_data.get("data", {})
             if wf_name not in WORKFLOWS:
+                tool_trace.append({"tool": "execute_workflow", "workflow": wf_name, "ok": False, "error": "unknown workflow"})
                 return {"error": f"Unknown workflow '{wf_name}'. Available: {list(WORKFLOWS.keys())}"}
             logger.info("Sub-agent → execute_workflow('%s', %s)", wf_name, json.dumps(data))
             try:
                 result = await WORKFLOWS[wf_name](data, client)
-                logger.info("Workflow '%s' result: %s", wf_name, json.dumps(result))
+                has_error = "error" in result
+                logger.info("Workflow '%s' %s: %s", wf_name, "FAILED" if has_error else "OK", json.dumps(result))
+                tool_trace.append({"tool": "execute_workflow", "workflow": wf_name, "ok": not has_error})
                 return result
             except Exception as e:
                 logger.exception("Workflow '%s' raised exception", wf_name)
+                tool_trace.append({"tool": "execute_workflow", "workflow": wf_name, "ok": False, "error": str(e)})
                 return {"error": str(e)}
 
-        # Raw API tools
+        # Raw API tools (fallback)
         endpoint = input_data.get("endpoint", "")
         params = input_data.get("params")
         payload = input_data.get("payload")
+        logger.info("Sub-agent → raw %s %s (params=%s)", name, endpoint, params)
+        tool_trace.append({"tool": name, "endpoint": endpoint})
 
         if name == "tripletex_get":
             return await client.get(endpoint, params=params)
@@ -264,5 +273,18 @@ async def run_sub_agent(
         max_iterations=15,
     )
 
+    # Performance summary
+    workflow_attempts = [t for t in tool_trace if t["tool"] == "execute_workflow"]
+    workflow_failures = [t for t in workflow_attempts if not t["ok"]]
+    raw_api_calls = [t for t in tool_trace if t["tool"].startswith("tripletex_")]
+    logger.info(
+        "Sub-agent summary: %d tool calls [%d ask_chief, %d workflow (%d failed), %d raw API]",
+        len(tool_trace), len(conversation_log), len(workflow_attempts),
+        len(workflow_failures), len(raw_api_calls),
+    )
+    if workflow_failures:
+        logger.warning("Sub-agent workflow failures: %s", workflow_failures)
+
     result["chief_qas"] = len(conversation_log)
+    result["tool_trace"] = tool_trace
     return result

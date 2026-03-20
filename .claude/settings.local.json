@@ -77,7 +77,12 @@
       "Bash(python -c \"from src.agent.server import app; print\\(''Server OK''\\)\")",
       "Bash(md5 src/agent/orchestrator.py)",
       "Bash(ls -la src/agent/*.py src/agent/workflows/*.py)",
-      "Read(//Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/**)"
+      "Read(//Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/**)",
+      "Bash(pkill -f \"uvicorn src.agent.server\")",
+      "Bash(gcloud run:*)",
+      "Bash(python scripts/parse_openapi.py supplierInvoice)",
+      "Bash(python scripts/parse_openapi.py voucher)",
+      "Bash(python scripts/parse_openapi.py \"POST /ledger/voucher\")"
     ]
   },
   "enabledMcpjsonServers": [

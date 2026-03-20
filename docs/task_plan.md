@@ -71,10 +71,15 @@ Redesigned orchestrator from single-agent loop to true multi-agent with memory.
 - [x] **8g: Schemas audit** — all 11 schemas updated to expose every field workflows actually read
 
 ### Phase 9: Test + Deploy Multi-Agent — IN PROGRESS
-- [ ] **9a: Local testing** — test with real competition prompts (T1 + T2)
-- [ ] **9b: Fix issues** from test results
-- [ ] **9c: Deploy to Cloud Run**
-- [ ] **9d: Submit to competition + verify scores**
+- [x] **9a: Local testing** — supplier, employee, travel expense all working
+- [x] **9b: Deploy v02 to Cloud Run** — deployed and receiving competition tasks
+- [ ] **9c: Fix Vertex crash** — NoneType on empty/blocked Gemini response (FIXED in code, needs redeploy)
+- [ ] **9d: Add supplier invoice workflow** — competition sent French supplier invoice, we have no workflow
+  - Option A: `POST /ledger/voucher` with manual postings (debit 6500 + input VAT, credit 2400)
+  - Option B: Rely on fallback sub-agent with raw API tools (current behavior, but crashed)
+  - Need to research `POST /ledger/voucher` body schema + posting format
+- [ ] **9e: Redeploy with fixes**
+- [ ] **9f: Monitor competition scores**
 
 ### Phase 10: Specialist Domain Agents
 Replace the generic sub-agent with **domain-specialist agents** — each an expert in
