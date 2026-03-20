@@ -92,19 +92,40 @@ All 11 workflows rebuilt with correct API contracts:
 - Chief had no memory between questions → fixed with conversation_log + chief_memory
 - Chief didn't know environment was empty → fixed with explicit "fresh environment" in all prompts
 
-**Files modified:**
-- `src/agent/orchestrator.py` — full rewrite (3 iterations)
-- `src/agent/server.py` — updated to call `solve_task()`
-- `src/agent/schemas.py` — all 11 schemas updated with missing fields
+**Codebase refactored:**
+```
+src/agent/
+  server.py, orchestrator.py, models.py, tripletex.py, utils.py
+  agents/ → chief.py, sub_agent.py
+  llm/ → client.py
+  workflows/ → __init__.py (WORKFLOWS dict), schemas.py, 9 workflow files
+DELETED: interpreter.py, router.py, fallback.py (all dead code)
+```
+
+**Competition deployment (v02-v03):**
+- Deployed to Cloud Run, receiving real competition tasks
+- Supplier prompt (Norwegian): 1 API call, 0 errors, 8.3s — perfect
+- Employee prompt: 3 API calls, 1 error (entitlement template wrong) → fixed ALL_PRIVILEGES
+- Travel expense (German): 9 API calls, 1 error (duplicate employee in sandbox) — would be clean in competition
+
+**Competition bugs found + fixed (v04):**
+- P1 (CRITICAL): Steps couldn't pass results — Step 2 sub-agent had no invoice ID from Step 1
+  → Fixed: `workflow_result` with key fields, `prior_context` includes actual IDs, chief_memory updated
+- P2: Customer name not merged — `_ensure_customer` ignored `customerName` when customer object present
+  → Fixed: merges `customerName` into customer object as fallback
+- P3: Sub-agent ignored "fallback" — tried `execute_workflow` even when Chief said use fallback
+  → Fixed: fallback system prompt says "Do NOT call execute_workflow, use raw API tools"
+- P4: Vertex NoneType crash — Gemini returned empty response parts
+  → Fixed: None guard in client.py
 
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 9 — testing + deploying the multi-agent orchestrator |
-| Where am I going? | Test with real prompts, fix issues, deploy to Cloud Run |
-| What's the goal? | Robust multi-agent that handles complex/unknown tasks via Chief planning + sub-agent execution |
-| What have I learned? | Sub-agents need field specs, Chief needs persistent memory, "empty environment" must be explicit |
-| What have I done? | Full multi-agent orchestrator with Chief memory, ask_chief, conversation logs, thinking step |
+| Where am I? | Phase 9h — redeploying with competition bug fixes |
+| Where am I going? | Deploy v04, test with Spanish invoice+payment prompt, monitor scores |
+| What's the goal? | Multi-step tasks (invoice → payment) should work end-to-end with correct IDs passed between steps |
+| What have I learned? | Steps MUST pass actual results (IDs) to subsequent steps. Chief hallucinated when it didn't have real data. Fallback must be explicit. |
+| What have I done? | 4 critical bug fixes: result passing, customer name merge, fallback behavior, Vertex crash guard |
 
 ---
 *Update after completing each phase or encountering errors*

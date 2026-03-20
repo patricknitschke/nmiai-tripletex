@@ -323,5 +323,62 @@ When sub-agent calls ask_chief("What is the org number for Fjelltopp AS?"):
 - `src/agent/orchestrator.py` — Rewrite with Chief planner + sub-agent with ask_chief
 - Everything else unchanged (server.py, llm.py, schemas.py, workflows, router.py)
 
+## Real Competition Test Prompts
+
+### T1: Supplier registration (Norwegian) — PASS
+```
+Registrer leverandøren Berghaven Consulting AS (org.nr 998877665), e-post faktura@berghaven.no, adresse Storgata 15, 0184 Oslo.
+```
+Result: 1 API call, 0 errors, 8.3s. Chief mapped leverandør → create_customer with isSupplier=true.
+
+### T1: Employee creation (Norwegian) — PASS (1 error)
+```
+Opprett en ansatt med navn Kari Nordmann, e-post kari@example.no. Hun skal være kontoadministrator.
+```
+Result: 3 API calls, 1 error (entitlement template "administrator" → 404). Fixed with ALL_PRIVILEGES.
+
+### T2: Travel expense with per diem (German) — PASS (1 error)
+```
+Erstellen Sie eine Reisekostenabrechnung für den Mitarbeiter Paul Hoffmann (paul.hoffmann@example.org). Reise nach Bergen, 15.-18. März 2026. Kosten: Flugticket Berlin-Bergen 2800 NOK, Taxi zum Hotel 450 NOK, Hotel 3 Nächte à 1200 NOK pro Nacht. Außerdem 4 Tage Tagegeld mit einem Tagessatz von 800 NOK. Erstellen Sie zuerst den Mitarbeiter und dann die Reisekostenabrechnung mit allen Kosten.
+```
+Result: 9 API calls, 1 error (duplicate employee email in sandbox — would be clean in competition). Chief optimized to 1 step.
+
+### T2: Invoice + payment (Spanish) — FAILED (0/8)
+```
+Crea un pedido para el cliente Luna SL (org. nº 800572525) con los productos Informe de análisis (6174) a 7950 NOK y Diseño web (5787) a 2350 NOK. Convierte el pedido en factura y registra el pago completo.
+```
+Failure: Step 2 (register_payment) couldn't see Step 1's invoice ID. Chief hallucinated "simulated environment". Fixed in v04 with result passing between steps.
+
+### T2: Supplier invoice (French) — FAILED (crashed)
+```
+Nous avons reçu la facture INV-2026-4914 du fournisseur Océan SARL (nº org. 853705209) de 56300 NOK TTC. Le montant concerne des services de bureau (compte 6500). Enregistrez la facture fournisseur avec 25% TVA.
+```
+Failure: 1) Vertex NoneType crash on empty response. 2) No supplier invoice workflow. 3) Sub-agent ignored fallback and tried create_invoice. All three fixed in v04 (crash guard, fallback behavior). Supplier invoice workflow still needed (Phase 9g).
+
+### T1: Invoice with product lines (Nynorsk) — used for local testing
+```
+Opprett ein faktura til kunden Fjelltopp AS (org.nr 862382900) med tre produktlinjer: Analyserapport (3271) til 1950 kr med 25% MVA, Skylagring (8738) til 6850 kr med 15% MVA, og Nettverksoppsett (4410) til 3200 kr utan MVA.
+```
+
+### T2: Register payment on existing invoice (Nynorsk) — FAILED (0/8, hit max iterations)
+```
+Kunden Elvdal AS (org.nr 963143230) har ein uteståande faktura på 19600 kr eksklusiv MVA for "Datarådgjeving". Registrer full betaling på denne fakturaen.
+```
+Failure: Chief planned as fallback (couldn't find invoice ID). Sub-agent spiralled for 15 iterations:
+- Found customer OK, but couldn't find invoice (empty account — invoice doesn't exist yet)
+- Wasted 5 iterations guessing invalid invoice field names (status, isPaid, openAmount, totalAmount)
+- Chief eventually realized invoice needs to be created first, but gave wrong field names
+- Sub-agent tried create_invoice and create_customer with wrong field names, both failed
+- BUG: 422 response detected as "OK" because no `"error"` key in response
+Key lesson: Chief must reason that "register payment on invoice" in empty account = create invoice first, then register payment. This is exactly what specialist agents (Phase 10) would handle.
+
+### T2: Invoice + payment (Spanish) — competition prompt (scored 0/8)
+```
+Crea un pedido para el cliente Luna SL (org. nº 800572525) con los productos Informe de análisis (6174) a 7950 NOK y Diseño web (5787) a 2350 NOK. Convierte el pedido en factura y registra el pago completo.
+```
+Step 1 (invoice) succeeded after 1 retry (customer name merge issue). Step 2 (payment) failed because
+sub-agent couldn't see Step 1's invoice ID — Chief hallucinated "simulated environment". Fixed in v04
+with result passing between steps.
+
 ---
 *Update this file after every 2 view/browser/search operations*

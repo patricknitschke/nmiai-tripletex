@@ -73,104 +73,108 @@ Redesigned orchestrator from single-agent loop to true multi-agent with memory.
 ### Phase 9: Test + Deploy Multi-Agent — IN PROGRESS
 - [x] **9a: Local testing** — supplier, employee, travel expense all working
 - [x] **9b: Deploy v02 to Cloud Run** — deployed and receiving competition tasks
-- [ ] **9c: Fix Vertex crash** — NoneType on empty/blocked Gemini response (FIXED in code, needs redeploy)
-- [ ] **9d: Add supplier invoice workflow** — competition sent French supplier invoice, we have no workflow
+- [x] **9c: Fix Vertex crash** — NoneType on empty/blocked Gemini response → added None guard in client.py
+- [x] **9d: Fix step result passing** — Steps couldn't see prior step results (IDs, invoice numbers)
+  - Sub-agent now returns `workflow_result` with key fields (id, invoiceNumber, etc.)
+  - Orchestrator stores `key_results` in `completed_steps` and includes in `prior_context`
+  - Chief memory also updated after each step so it can answer questions about prior results
+- [x] **9e: Fix customer name merge** — `_ensure_customer` now merges `customerName` into customer object
+  - Previously: `{"customer": {"organizationNumber": "..."}}` → 422 (name required)
+  - Now: falls back to `customerName` field if customer object has no name
+- [x] **9f: Fix fallback behavior** — Sub-agent now respects `suggested_workflow: "fallback"`
+  - When fallback: sub-agent sees "No workflow. Use raw API tools. Do NOT call execute_workflow."
+  - Previously: sub-agent ignored fallback and tried execute_workflow anyway
+- [ ] **9g: Fix 422 error detection** — BUG: workflow returns raw 422 JSON without `"error"` key,
+  sub-agent logs it as "OK". `has_error` check needs to also detect `"status": 4xx` in response.
+- [ ] **9h: Improve Chief planning for implicit prerequisites** — Chief doesn't infer that
+  "register payment on invoice" in an empty account means "create invoice first".
+  Needs stronger reasoning prompt about creating prerequisites for referenced resources.
+- [ ] **9i: Add supplier invoice workflow** — competition sent French supplier invoice, we have no workflow
   - Option A: `POST /ledger/voucher` with manual postings (debit 6500 + input VAT, credit 2400)
-  - Option B: Rely on fallback sub-agent with raw API tools (current behavior, but crashed)
+  - Option B: Rely on fallback sub-agent with raw API tools (now fixed, won't crash)
   - Need to research `POST /ledger/voucher` body schema + posting format
-- [ ] **9e: Redeploy with fixes**
-- [ ] **9f: Monitor competition scores**
+- [ ] **9j: Redeploy + retest** — deploy with all fixes, test with Spanish invoice+payment prompt
+- [ ] **9i: Monitor competition scores**
 
-### Phase 10: Specialist Domain Agents
-Replace the generic sub-agent with **domain-specialist agents** — each an expert in
-their accounting area. The Chief becomes a true manager: consults specialists before
-planning, then delegates execution to the right specialist.
+### Phase 10: API Knowledge Tool (OpenAPI Lookup)
+Build FIRST — gives the generic sub-agent an immediate boost, and every specialist
+agent built in Phase 11 inherits it as a failsafe.
 
-**Architecture vision:**
-```
-Chief reads prompt → identifies domain(s) → consults specialists → designs plan
-  ↓
-Invoice Specialist: deep knowledge of orders, products, VAT, bank accounts
-Employee Specialist: employee creation, roles, entitlements, departments
-Travel Specialist: travel expenses, cost lines, per diem, employee creation
-Project Specialist: projects, project managers, customer links
-General Specialist: customers, suppliers, departments, products (simple CRUD)
-```
-
-**What each specialist knows that the generic sub-agent doesn't:**
-- Domain-specific error patterns and how to recover from them
-- Which prerequisites their workflows need (e.g., Invoice Specialist knows about bank accounts)
-- Best practices for their domain (e.g., Travel Specialist knows per diem vs cost lines)
-- How to extract the right data from prompts for their specific workflow
-
-**Implementation approach:**
-- [ ] **10a: Define specialist agents** — one per domain, each in `agents/specialists/`
-  - Each has: domain-specific system prompt, knowledge of their workflows, error recovery patterns
-  - Reuse the same tool set (ask_chief + execute_workflow + raw API)
-- [ ] **10b: Chief consults before planning** — Chief can ask specialists "can you handle this?"
-  - Specialists advise: what they need, what might go wrong, suggested approach
-  - Chief incorporates advice into the plan
-- [ ] **10c: Chief delegates to specialists** — instead of generic sub-agent, route to the right specialist
-- [ ] **10d: Specialist-specific error recovery** — each specialist knows how to handle its own 4xx errors
-
-**File structure:**
-```
-src/agent/agents/
-  chief.py                    # Chief: plan, consult, review
-  specialists/
-    __init__.py               # Registry: domain → specialist
-    invoice.py                # Invoice + order + payment + credit note
-    employee.py               # Employee + department
-    travel.py                 # Travel expense + per diem
-    project.py                # Project management
-    general.py                # Customer, supplier, product (simple CRUD)
-```
-
-### Phase 11: API Knowledge Tool (OpenAPI Lookup)
-Give agents runtime access to the Tripletex OpenAPI spec so they can self-serve
-when they hit unknown fields, enums, or 4xx errors.
-
-**Problem this solves:**
-- Hardcoded enum values (like the entitlement `template` bug) break silently
-- Adding new workflows requires manually reading the 3.7MB spec
-- Specialists can't self-serve when they hit unknown fields or 4xx errors
+**Problem this solves (with real evidence):**
+- Elvdal AS: sub-agent wasted 5 iterations guessing invoice field names
+  (status, isPaid, openAmount, totalAmount — none valid). A single `lookup_api("GET /invoice fields")`
+  would have returned the valid fields instantly.
+- Chief answered with wrong field names (`customer_name` vs `name`). If it could
+  query the spec, it would give correct names every time.
+- Entitlement template bug: hardcoded `"administrator"` instead of `"ALL_PRIVILEGES"`.
+- Supplier invoice: sub-agent didn't know which endpoint to use for purchase invoices.
 
 **Approach: Plain tool first, MCP later if needed.**
-Start with a simple Python module + agent tool (works with any LLM, no protocol overhead).
-Later, if we need multiple consumers (e.g., Claude Desktop for manual exploration,
-other projects), wrap it as a proper MCP server using the `mcp` Python SDK.
+Simple Python module + agent tool (works with any LLM, no protocol overhead).
+Later, wrap as MCP server if we need interoperability.
 
 **Agent tool:**
 ```
 lookup_api(query)  → searches OpenAPI spec, returns endpoint details, enums, required fields
 ```
 
-Under the hood: Python function that parses `docs/tripletex_openapi.json` and returns
-relevant schema info. Exposed as a tool in the sub-agent tool list alongside
-ask_chief, execute_workflow, and the raw API tools.
-
-**Example usage by agent:**
-- Agent hits 404 on entitlement call → `lookup_api("entitlement template enum values")`
-  → gets `["NONE_PRIVILEGES", "ALL_PRIVILEGES", ...]` → retries with correct value
-- Agent needs to create a new resource type → `lookup_api("POST /ledger/voucher")`
-  → gets full schema with required fields
-
 **Implementation:**
-- [ ] **11a: Build lookup module** — `src/agent/api_spec.py`, wraps OpenAPI JSON
+- [ ] **10a: Build lookup module** — `src/agent/api_spec.py`, wraps OpenAPI JSON
   - Functions: search_endpoints(keyword), get_endpoint_schema(path, method), get_enum_values(path, field)
-- [ ] **11b: Expose as agent tool** — add `lookup_api` to sub-agent tool list
-- [ ] **11c: Error recovery pattern** — on 4xx, agent queries the spec before retrying
-- [ ] **11d (future): MCP server** — if we need interoperability, wrap with `mcp` Python SDK
-  - Enables: Claude Desktop exploration, sharing across projects, standalone API docs tool
+- [ ] **10b: Expose as agent tool** — add `lookup_api` to sub-agent tool list
+- [ ] **10c: Error recovery pattern** — on 4xx, agent queries the spec before retrying
+- [ ] **10d (future): MCP server** — if we need interoperability, wrap with `mcp` Python SDK
 
 **File structure:**
 ```
 src/agent/
   api_spec.py              # OpenAPI lookup module (plain Python)
+```
 
-# Future MCP wrapper (only if needed):
-src/mcp/
-  tripletex_api_server.py  # MCP server wrapping api_spec.py
+### Phase 11: Specialist Domain Agents
+Build AFTER Phase 10 — each specialist inherits the `lookup_api` tool as failsafe.
+Build incrementally: start with Invoice Specialist (highest value), add others one by one.
+
+**Evidence from competition that specialists would help:**
+- Elvdal AS: Chief didn't know "register payment" in empty account = create invoice first.
+  An Invoice Specialist would know this pattern immediately.
+- French supplier invoice: Sub-agent tried `create_invoice` (sales) for a purchase invoice.
+  An AP Specialist would know to use `POST /ledger/voucher` instead.
+- Chief gave wrong field names. Specialists know their own workflow field names perfectly.
+
+**Architecture vision:**
+```
+Chief reads prompt → identifies domain(s) → consults specialists → designs plan
+  ↓
+Each specialist has: domain knowledge + ask_chief + execute_workflow + raw API + lookup_api
+  ↓
+Invoice Specialist: orders, products, VAT, bank accounts, payment registration
+AP Specialist: supplier invoices, vouchers, purchase ledger
+Employee Specialist: employee creation, roles, entitlements, departments
+Travel Specialist: travel expenses, cost lines, per diem
+General Specialist: customers, suppliers, departments, products (simple CRUD)
+```
+
+**Implementation (incremental):**
+- [ ] **11a: Invoice Specialist** — highest value, handles invoice + payment + credit note
+- [ ] **11b: AP Specialist** — supplier invoices via POST /ledger/voucher
+- [ ] **11c: Employee Specialist** — employee + entitlements + departments
+- [ ] **11d: Travel Specialist** — travel expenses + per diem
+- [ ] **11e: Chief delegates to specialists** — route to right specialist based on plan
+- [ ] **11f: Chief consults before planning** — ask specialists "can you handle this?"
+
+**File structure:**
+```
+src/agent/agents/
+  chief.py                    # Chief: plan, consult, review
+  sub_agent.py                # Generic sub-agent (still used as default)
+  specialists/
+    __init__.py               # Registry: domain → specialist
+    invoice.py                # Invoice + order + payment + credit note
+    ap.py                     # Accounts Payable (supplier invoices, vouchers)
+    employee.py               # Employee + department
+    travel.py                 # Travel expense + per diem
+    general.py                # Customer, supplier, product (simple CRUD)
 ```
 
 ### Phase 12: Tier 3 Workflows + Iteration
