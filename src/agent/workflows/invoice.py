@@ -51,7 +51,11 @@ async def _ensure_customer(data: dict, client: TripletexClient) -> int | None:
         return customer_id
 
     if data.get("customer"):
-        result = await create_customer(data["customer"], client)
+        customer_data = dict(data["customer"])  # copy to avoid mutating input
+        # Merge customerName if customer object is missing name
+        if not customer_data.get("name") and data.get("customerName"):
+            customer_data["name"] = data["customerName"]
+        result = await create_customer(customer_data, client)
         return result.get("value", {}).get("id")
 
     # Try to find by name

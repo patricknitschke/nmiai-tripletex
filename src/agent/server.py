@@ -32,7 +32,7 @@ async def solve(request: SolveRequest):
 
     logger.info("=" * 60)
     logger.info("NEW TASK RECEIVED")
-    logger.info("Prompt: %s", request.prompt[:200])
+    logger.info("Prompt: %s", request.prompt)
     logger.info("Files: %s", [f.filename for f in request.files])
     logger.info("Base URL: %s", request.tripletex_credentials.base_url)
 

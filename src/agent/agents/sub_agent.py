@@ -206,7 +206,15 @@ async def run_sub_agent(
 ) -> dict:
     """Run a sub-agent to execute a single step. Returns tool_use_loop result."""
 
-    workflow_spec = build_workflow_spec(suggested_workflow)
+    if suggested_workflow == "fallback":
+        workflow_spec = (
+            "## No pre-built workflow available for this task\n"
+            "Use the raw Tripletex API tools (tripletex_get/post/put/delete) directly.\n"
+            "Do NOT call execute_workflow — there is no workflow for this task type.\n"
+            "Ask the Chief for guidance on which API endpoints and payloads to use."
+        )
+    else:
+        workflow_spec = build_workflow_spec(suggested_workflow)
     system = SYSTEM_PROMPT.format(
         task_description=task_description,
         workflow_spec=workflow_spec,
@@ -219,6 +227,8 @@ async def run_sub_agent(
     conversation_log: list[dict] = []
     # Tool call trace for post-mortem analysis
     tool_trace: list[dict] = []
+    # Last successful workflow result (for passing IDs to next step)
+    last_workflow_result: dict = {}
 
     async def execute_tool(name: str, input_data: dict) -> dict:
         if name == "ask_chief":
@@ -241,6 +251,9 @@ async def run_sub_agent(
                 has_error = "error" in result
                 logger.info("Workflow '%s' %s: %s", wf_name, "FAILED" if has_error else "OK", json.dumps(result))
                 tool_trace.append({"tool": "execute_workflow", "workflow": wf_name, "ok": not has_error})
+                if not has_error:
+                    last_workflow_result.clear()
+                    last_workflow_result.update(result)
                 return result
             except Exception as e:
                 logger.exception("Workflow '%s' raised exception", wf_name)
@@ -287,4 +300,18 @@ async def run_sub_agent(
 
     result["chief_qas"] = len(conversation_log)
     result["tool_trace"] = tool_trace
+    result["workflow_result"] = _extract_key_fields(last_workflow_result)
     return result
+
+
+def _extract_key_fields(result: dict) -> dict:
+    """Extract IDs and key fields from workflow result for passing to next step."""
+    value = result.get("value", {})
+    if not value:
+        return {}
+    keys = {}
+    for field in ["id", "invoiceNumber", "customerNumber", "supplierNumber",
+                   "name", "displayName", "employeeNumber", "number"]:
+        if field in value and value[field]:
+            keys[field] = value[field]
+    return keys

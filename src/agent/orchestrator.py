@@ -53,9 +53,9 @@ async def solve_task(
         logger.info("-" * 40)
         logger.info("STEP %d: %s (workflow: %s)", step_num, task_desc, suggested_wf)
 
-        # Build prior context
+        # Build prior context with actual results (IDs, numbers) from prior steps
         prior_context = "None yet." if not completed_steps else json.dumps(
-            [{"step": s["task"], "result_summary": s.get("result_summary", "completed")}
+            [{"step": s["task"], "result": s.get("key_results", {})}
              for s in completed_steps],
             indent=2,
         )
@@ -71,17 +71,23 @@ async def solve_task(
             chief_memory=chief_memory,
         )
 
-        # Record completed step
+        # Record completed step with actual results
+        key_results = sub_result.get("workflow_result", {})
         completed_steps.append({
             "task": task_desc,
             "suggested_workflow": suggested_wf,
             "result_summary": sub_result.get("status", "unknown"),
             "iterations": sub_result.get("iterations", 0),
+            "key_results": key_results,
         })
 
-        logger.info("Step %d completed: %s (%d iterations, %d chief Q&As)",
+        # Update Chief memory with step results so it knows what was created
+        if key_results:
+            chief_memory += f"\n\nStep {step_num} result: {json.dumps(key_results)}"
+
+        logger.info("Step %d completed: %s (%d iterations, %d chief Q&As, results: %s)",
                      step_num, sub_result.get("status"), sub_result.get("iterations", 0),
-                     sub_result.get("chief_qas", 0))
+                     sub_result.get("chief_qas", 0), key_results)
 
         # Stage 3: Chief reviews (only if there are remaining steps)
         if remaining_steps:

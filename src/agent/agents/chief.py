@@ -102,7 +102,7 @@ async def chief_plan(prompt: str, files: list) -> tuple[str, list[dict]]:
 
     content = build_content(prompt, files)
     raw = await complete(system, content)
-    logger.info("Chief plan raw: %s", raw[:500])
+    logger.info("Chief plan raw: %s", raw)
 
     try:
         plan = parse_json(raw)
@@ -229,7 +229,7 @@ async def chief_review(
     content.append({"type": "text", "text": context_text})
 
     raw = await complete(REVIEW_PROMPT, content)
-    logger.info("Chief review: %s", raw[:300])
+    logger.info("Chief review raw: %s", raw)
 
     try:
         review = parse_json(raw)
