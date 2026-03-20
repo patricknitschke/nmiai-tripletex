@@ -392,5 +392,29 @@ Key lesson: "Do NOT call execute_workflow" in fallback was too aggressive — su
 use workflows for known sub-tasks. Also needs: time registration workflow (POST /timesheet/entry)
 and project invoice workflow (POST /invoice/projectInvoice) for T3.
 
+## Model Comparison (2026-03-20)
+
+Tested on Nynorsk order→invoice→payment prompt:
+```
+Opprett ein ordre for kunden Bølgekraft AS (org.nr 908252764) med produkta
+Nettverksteneste (6065) til 25500 kr og Systemutvikling (2511) til 23550 kr.
+Konverter ordren til faktura og registrer full betaling.
+```
+
+| Model | Time | Iterations | Errors | Invoice Total | Notes |
+|-------|------|-----------|--------|---------------|-------|
+| gemini-2.5-flash | 42.1s | 3 | 0 | 61,312.50 | Added 25% VAT on top |
+| gemini-2.5-pro | 18.6s | 3 | 0 | 49,050 | Treated prices as-is |
+| gemini-3.1-pro-preview | 42.0s | 4 | 2 | 49,050 | Duplicate product errors |
+
+**Key finding:** All models score 0/8 in competition. The issue is how "til X kr" is interpreted
+(excl-VAT vs incl-VAT), not model quality. Competition scoring expects specific price treatment.
+
+**Gemini 3.x location:** Models with prefix "gemini-3" require `location="global"` instead of
+`us-central1`. Added automatic routing in client.py.
+
+**Model availability:** gemini-3-flash-preview was NOT available (404). gemini-3.1-pro-preview
+works after enabling in Model Garden.
+
 ---
 *Update this file after every 2 view/browser/search operations*

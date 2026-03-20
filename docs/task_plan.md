@@ -3,34 +3,43 @@
 ## Goal
 Build a Python AI agent (FastAPI + Claude/Gemini) that receives accounting task prompts via `/solve`, interprets them with an LLM to extract task type + structured data, then executes pre-built workflows with minimal API calls. Deploy to GCP Cloud Run for the NM i AI competition (March 19-22, 2026).
 
-## Architecture (v3 — Chief Accountant Multi-Agent)
+## Architecture (v4 — Senior Accountant + modes)
+
+**Default: Senior Accountant (AGENT_MODE=senior)**
+```
+POST /solve (100s deadline)
+  → Senior Accountant (single agent loop)
+    - Sees: full prompt + files + workflow catalog in system prompt
+    - Tools: execute_workflow, lookup_api, tripletex_get/post/put/delete
+    - Reads prompt, chains workflows directly, handles errors with lookup_api
+    - Typically 3-6 iterations, 15-50s
+```
+
+**Alternative: Chief multi-agent (AGENT_MODE=chief)**
 ```
 POST /solve
-  → Chief Accountant THINKS (reasoning about dependencies, empty environment, approach)
-  → Chief produces plan: {thinking, steps[{task, suggested_workflow}]}
-  → Chief's thinking + plan stored as persistent "chief_memory"
-  → For each step:
-      → Sub-agent gets: task description + workflow field spec + prior context
-      → Sub-agent has tools:
-          - ask_chief(question) → Chief re-reads original prompt + remembers plan + prior Q&A
-          - execute_workflow(name, data) → calls pre-built workflow functions
-          - lookup_api(query) → searches OpenAPI spec for field names, enums, endpoints
-          - tripletex_get/post/put/delete → raw API fallback
-      → Sub-agent pulls data from Chief as needed, then executes
-      → Conversation log persisted per step (Chief remembers all Q&A)
-  → Between steps: Chief reviews progress, can adjust remaining steps
+  → Chief plans → sub-agents execute per step → Chief reviews between steps
+  → More overhead but better for complex multi-step coordination
+```
+
+**Planned: Hybrid mode (AGENT_MODE=hybrid)**
+```
+POST /solve
+  → Chief THINKS + produces plan (1 LLM call)
+  → Senior executes with plan as context preamble
+  → Best of both: strategic planning + direct execution
 ```
 
 **Key design principles:**
-- Chief is the "solution architect" — thinks through dependencies and approach BEFORE delegating
-- Chief has persistent memory: its thinking + plan + per-step conversation logs
-- Sub-agents PULL data from Chief (ask_chief) rather than Chief PUSHING all data upfront
-- Sub-agents see exact workflow field specs — no guessing field names
-- Fresh empty environment is a first-class concept — Chief knows everything must be created
-- Each sub-agent session is independent with its own reasoning loop
+- Senior Accountant is the fast path — handles 80% of tasks directly
+- Fresh empty environment is a first-class concept — all prompts know everything must be created
+- lookup_api tool gives agents self-serve access to OpenAPI spec (field names, enums, endpoints)
+- BETA endpoints flagged and blocked — only non-BETA endpoints used in workflows
+- 100s deadline with 20s buffer before 120s cloudflare timeout
+- Workflows search-before-create (e.g., employee by email) to handle pre-existing resources
 
 ## Current Phase
-Phase 9 — Test + Deploy Multi-Agent Orchestrator
+Phase 10 COMPLETE — API Knowledge Tool deployed. Model testing in progress. Senior mode is default for competition.
 
 ## Phases
 
@@ -71,87 +80,35 @@ Redesigned orchestrator from single-agent loop to true multi-agent with memory.
 - [x] **8f: Workflow field specs in sub-agent prompt** — sub-agent sees exact field names, no guessing
 - [x] **8g: Schemas audit** — all 11 schemas updated to expose every field workflows actually read
 
-### Phase 9: Test + Deploy Multi-Agent — IN PROGRESS
+### Phase 9: Test + Deploy Multi-Agent — MOSTLY COMPLETE
 - [x] **9a: Local testing** — supplier, employee, travel expense all working
 - [x] **9b: Deploy v02 to Cloud Run** — deployed and receiving competition tasks
 - [x] **9c: Fix Vertex crash** — NoneType on empty/blocked Gemini response → added None guard in client.py
-- [x] **9d: Fix step result passing** — Steps couldn't see prior step results (IDs, invoice numbers)
-  - Sub-agent now returns `workflow_result` with key fields (id, invoiceNumber, etc.)
-  - Orchestrator stores `key_results` in `completed_steps` and includes in `prior_context`
-  - Chief memory also updated after each step so it can answer questions about prior results
-- [x] **9e: Fix customer name merge** — `_ensure_customer` now merges `customerName` into customer object
-  - Previously: `{"customer": {"organizationNumber": "..."}}` → 422 (name required)
-  - Now: falls back to `customerName` field if customer object has no name
-- [x] **9f: Fix fallback behavior** — REVISED: "Do NOT call execute_workflow" was too aggressive.
-  Portuguese prompt showed sub-agent couldn't use create_employee even when it would have worked.
-  Fixed: fallback now allows workflows for known sub-tasks + raw API for unknown parts.
-- [x] **9g: Fix 422 error detection** — `has_error` now checks for `"status": 4xx` in addition to `"error"` key.
-- [ ] **9h: Improve Chief planning for implicit prerequisites** — Chief doesn't infer that
-  "register payment on invoice" in an empty account means "create invoice first".
-- [x] **9i: Increase Chief plan max_tokens** — bumped to 4096 (was 2048, caused Portuguese truncation).
-- [ ] **9j: Add supplier invoice workflow** — French supplier invoice, no workflow.
-- [ ] **9k: Sub-agent quality-of-life improvements** — from "thinking as the agent" analysis:
-  - [ ] 9k-1: **Concise workflow results** — return `{"created": "customer", "id": 123, "name": "Luna SL"}`
-    instead of dumping the full API response blob. Sub-agent wastes context parsing walls of JSON.
-  - [ ] 9k-2: **Tool priority order in prompt** — `lookup_api` for field names > `ask_chief` for data
-    values > `execute_workflow` > raw API. Currently sub-agent trusts Chief for field names (wrong).
-  - [ ] 9k-3: **Iteration budget awareness** — sub-agent should know "You have ~10 iterations. Be decisive."
-    Prevents the 15-iteration spirals we've seen on Portuguese and Elvdal prompts.
-  - [ ] 9k-4: **Structured fallback strategy** — when in fallback mode, give a default approach:
-    "1. lookup_api to find relevant endpoints. 2. ask_chief for data values. 3. Execute."
-    Not just "use raw API tools."
-  - [ ] 9k-5: **Partial success reporting** — sub-agent should return what it DID create,
-    not just pass/fail. If it created customer + employee but failed on invoice, the next
-    step should know those resources exist.
-- [ ] **9l: Chief quality-of-life improvements** — from "thinking as the Chief" analysis:
-  - [ ] 9l-1: **Pass Chief thinking to sub-agent** — sub-agent should receive the Chief's
-    reasoning about approach, not just the task string. e.g. "I chose create_invoice because
-    it handles customer creation internally via the customer object."
-  - [ ] 9l-2: **Richer execution feedback** — Chief should see what API calls were made, not
-    just `{"id": 123}`. e.g. "Created customer Luna SL (org 800572525) with id 108266620.
-    Created invoice #1, total 12875 NOK incl VAT." Lets Chief verify correctness during review.
-  - [ ] 9l-3: **Review after failures** — currently review only runs between successful steps.
-    Chief should review after failures too, so it can replan. "Step 1 failed because X.
-    Should I retry with different approach or adjust remaining steps?"
-  - [ ] 9l-4: **Concise planning prompt** — tell Chief explicitly: "Keep thinking under 100 words.
-    Keep each step task description under 50 words. Be compact." Prevents token truncation.
-- [ ] **9m: Redeploy + retest**
-- [ ] **9n: Monitor competition scores**
+- [x] **9d: Fix step result passing** — Sub-agent returns `workflow_result` with key fields, orchestrator passes via `prior_context`
+- [x] **9e: Fix customer name merge** — `_ensure_customer` merges `customerName` into customer object
+- [x] **9f: Fix fallback behavior** — fallback allows workflows for known sub-tasks + raw API for unknown
+- [x] **9g: Fix 422 error detection** — checks `"status": 4xx` in addition to `"error"` key
+- [ ] **9h: Improve Chief planning for implicit prerequisites** — deferred to hybrid mode (Phase 11)
+- [x] **9i: Increase Chief plan max_tokens** — bumped to 4096
+- [ ] **9j: Add supplier invoice workflow** — still needed
+- [ ] **9k/9l: Agent QoL improvements** — lower priority while Senior mode is default
+- [x] **9m: Senior Accountant mode** — single agent fast path, default for competition
+- [x] **9n: 120s timeout handling** — 100s deadline, 20s buffer
+- [x] **9o: BETA endpoint audit** — entitlement removed, lookup_api flags BETA
+- [x] **9p: Employee search-before-create** — finds existing by email
+- [x] **9q: Project startDate default** — defaults to today
+- [x] **9r: VAT cache fix** — resets per client instance
+- [x] **9s: Deployed Senior mode to competition**
+- [ ] **9t: Monitor competition scores** — ongoing
+- [x] **9u: Gemini 3.x location routing** — auto-routes to "global" for gemini-3.x models
+- [ ] **9v: Model selection** — tested 3 models, all score 0/8 on Nynorsk invoice+payment (VAT interpretation issue)
 
-### Phase 10: API Knowledge Tool (OpenAPI Lookup)
-Build FIRST — gives the generic sub-agent an immediate boost, and every specialist
-agent built in Phase 11 inherits it as a failsafe.
-
-**Problem this solves (with real evidence):**
-- Elvdal AS: sub-agent wasted 5 iterations guessing invoice field names
-  (status, isPaid, openAmount, totalAmount — none valid). A single `lookup_api("GET /invoice fields")`
-  would have returned the valid fields instantly.
-- Chief answered with wrong field names (`customer_name` vs `name`). If it could
-  query the spec, it would give correct names every time.
-- Entitlement template bug: hardcoded `"administrator"` instead of `"ALL_PRIVILEGES"`.
-- Supplier invoice: sub-agent didn't know which endpoint to use for purchase invoices.
-
-**Approach: Plain tool first, MCP later if needed.**
-Simple Python module + agent tool (works with any LLM, no protocol overhead).
-Later, wrap as MCP server if we need interoperability.
-
-**Agent tool:**
-```
-lookup_api(query)  → searches OpenAPI spec, returns endpoint details, enums, required fields
-```
-
-**Implementation:**
+### Phase 10: API Knowledge Tool (OpenAPI Lookup) — COMPLETE
 - [x] **10a: Build lookup module** — `src/agent/api_spec.py` with search_endpoints, get_endpoint, find_enum, lookup
-- [x] **10b: Expose as agent tool** — `lookup_api` added to SUB_AGENT_TOOLS (7th tool)
-- [x] **10c: Error recovery pattern** — sub-agent prompt says "use lookup_api BEFORE retrying on 4xx"
-- [x] **10d: Chief auto-includes spec** — when answering error/field questions, Chief auto-looks up relevant endpoint
-- [ ] **10e (future): MCP server** — if we need interoperability, wrap with `mcp` Python SDK
-
-**File structure:**
-```
-src/agent/
-  api_spec.py              # OpenAPI lookup module (plain Python)
-```
+- [x] **10b: Expose as agent tool** — `lookup_api` added to Senior + Sub-agent tools
+- [x] **10c: Error recovery pattern** — prompts say "use lookup_api BEFORE retrying on 4xx"
+- [x] **10d: Chief auto-includes spec** — auto-looks up relevant endpoint when answering field questions
+- [ ] **10e (future): MCP server** — wrap with `mcp` Python SDK if needed for interoperability
 
 ### Phase 11: Hybrid Mode — Chief Plans, Senior Executes
 Combine the Chief's strategic planning with the Senior's direct execution.
@@ -242,15 +199,15 @@ src/agent/agents/
 | Python + FastAPI | User preference, async, fast to build |
 | Schema-driven workflows | Field names/types from OpenAPI spec, not LLM guessing |
 | Pre-built workflows per task type | Exact minimum API calls, max efficiency bonus |
-| Vertex AI (Gemini 2.5 Flash) | Free via GCP, fast, good multilingual. Project: ainm26osl-722, location: us-central1 |
-| Supplier = create_customer with isSupplier | No separate workflow needed, just a classifier mapping |
-| **Multi-agent over single-agent** | Chief plans in own context, sub-agents execute in own context. Chief can "translate" prompts and adapt on failure. Sub-agents can reason about errors independently. |
-| **Chief uses complete(), sub-agents use tool_use_loop()** | Chief only needs to produce a plan (text→JSON). Sub-agents need to call tools iteratively. Different LLM primitives for different roles. |
-| **Sub-agents get clear English instructions, not raw prompts** | Chief translates multilingual prompts into precise task descriptions. Sub-agents don't need to parse Norwegian/German/etc. |
-| **ask_chief tool for dynamic data pulling** | Sub-agents pull exactly what they need, when they need it. Chief doesn't need to extract all fields upfront. More robust than one-shot extraction. |
-| **Chief has persistent memory (thinking + plan + Q&A)** | Chief's reasoning persists across all sub-agent interactions. No amnesia between questions. Consistent guidance throughout. |
-| **Fresh empty environment as first-class concept** | All agent prompts explicitly know the account starts empty. "Not found" means "create it", not "error". |
-| **Specialist domain agents (planned)** | Each accounting domain gets its own specialist agent with deep knowledge. Chief consults before planning, delegates to the right specialist. More robust than one generic sub-agent. |
+| Vertex AI (Gemini) | Tested 2.5-flash (42s), 2.5-pro (19s), 3.1-pro-preview (42s). All score 0/8 on same prompt — issue is VAT interpretation, not model. 2.5-pro fastest. 3.x needs "global" location. |
+| **Senior Accountant as default** | Single agent loop beats multi-agent for competition tasks. 20s vs 89s on same prompt. Direct tool access, no communication overhead. Chief mode available for complex tasks. |
+| **lookup_api tool** | Agents self-serve from OpenAPI spec. Prevents field name guessing (saved 5+ iterations on Elvdal/Portuguese prompts). Flags BETA endpoints. |
+| **100s deadline** | Cloudflare kills at 120s. 20s buffer ensures we always return "completed". |
+| **Search-before-create pattern** | Competition accounts may have pre-existing resources. Employee workflow searches by email first. |
+| **No BETA endpoints** | Competition blocks BETA endpoints with 403. All workflows audited, entitlement endpoint removed. |
+| **Fresh empty environment as first-class concept** | All prompts know account starts empty. "Not found" = "create it". |
+| **Hybrid mode (planned)** | Chief's strategic planning + Senior's direct execution. Best of both worlds. |
+| **Specialist agents (planned)** | Domain experts for invoice, AP, employee, travel. Each knows their API patterns. |
 
 ## Errors from Competition (Phase 7)
 | Task | Error | Root Cause | Fix |
@@ -261,42 +218,30 @@ src/agent/agents/
 | Travel expense (T2) | Wrong employee | Named employee ignored, used first available | **7c** — create employee from prompt |
 | Travel expense (T2) | Per diem as cost line | Tagegeld should use perDiemCompensations | **7d** — separate per diem handling |
 
-## Known Weaknesses (as of Phase 10)
+## Known Weaknesses (as of Phase 10 complete, model testing in progress)
 
-**Orchestrator level:**
-1. **No retry on failure** — sub-agent fails → orchestrator records "completed" and moves on.
-   Should detect failure and retry or ask Chief to replan.
-2. **No timeout management** — 300s budget, nothing tracks elapsed time. Sub-agent can burn
-   130s leaving no time for remaining steps.
-3. **Chief review often wasted** — almost always "continue as planned". Skip unless step failed.
+**Critical — affects scoring:**
+1. **VAT interpretation ambiguity** — "til 25500 kr" in Nynorsk: all models interpret as excl-VAT
+   prices, but competition may expect incl-VAT. Scored 0/8 across gemini-2.5-flash, 2.5-pro,
+   3.1-pro-preview. This is a prompt interpretation issue, not model capability.
+2. **Missing workflows** — supplier invoices (AP), time registration, project invoices.
+   Senior handles via raw API + lookup_api, but no dedicated workflow.
 
-**Sub-agent level (addressed in 9k):**
-4. **Workflow results flood context** — full API response JSON makes it hard for the LLM to
-   find the relevant ID. Need concise summaries. (9k-1)
-5. **Trusts Chief over spec for field names** — Chief hallucinates field names, sub-agent
-   should prefer lookup_api for API details. (9k-2)
-6. **No sense of iteration budget** — happily spirals for 15 iterations. Needs awareness. (9k-3)
-7. **Fallback mode has no strategy** — just "use raw API" with no structured approach. (9k-4)
-8. **All-or-nothing reporting** — can't report partial success. (9k-5)
+**Medium — affects efficiency:**
+3. **Workflow results flood context** — full API response JSON. Need concise summaries.
+4. **No iteration budget awareness** — Senior should know "be decisive, ~15 iterations max".
+5. **Model selection undecided** — 2.5-pro fastest (19s) but all models tie on accuracy.
 
-**Chief level (addressed in 9l):**
-9. **Sub-agent ignores Chief's reasoning** — Chief thinks carefully about approach, but
-   sub-agent only sees the task string, not the reasoning. Wastes the thinking step. (9l-1)
-10. **Reviews blind** — Chief only sees `{"id": 123}`, can't verify if the work was done
-    correctly (right org number? right VAT?). Reviews are rubber stamps. (9l-2)
-11. **No review after failure** — if sub-agent fails, Chief never gets to intervene
-    and replan. Only reviews between successful steps. (9l-3)
-12. **Can't infer implicit prerequisites** (9h) — "register payment on invoice" in empty
-    account should mean "create invoice first". Needs specialist agents.
-
-**Coverage gaps:**
-13. **Missing workflows** — supplier invoices, time registration, project invoices. Phase 11.
+**Low priority (Chief mode):**
+6. Chief QoL improvements (9k/9l) — deferred while Senior is default.
 
 ## Notes
 - Competition is LIVE (March 19-22, 2026)
 - Tier 3 tasks open early Saturday
 - 56 variants per task (7 languages × 8 data sets)
 - Rate limit: 10 submissions per task per day
-- Fresh Tripletex account per competition submission
-- Deployed URL: https://pining-for-the-woods-tripletex-v01-370009516620.europe-north1.run.app
+- Fresh Tripletex account per competition submission — session token single-use
+- **120s cloudflare timeout** — must return before this or score = 0
+- **BETA endpoints return 403** — do not use any [BETA] endpoint
 - Cloud Run project: ainm26osl-722
+- Default mode: AGENT_MODE=senior

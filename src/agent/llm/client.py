@@ -53,7 +53,9 @@ async def _vertex_complete(
     from google import genai
 
     project = os.environ.get("GCP_PROJECT_ID")
-    location = os.environ.get("GCP_LOCATION", "europe-north1")
+    default_location = os.environ.get("GCP_LOCATION", "europe-north1")
+    # Gemini 3.x models require "global" location
+    location = "global" if model.startswith("gemini-3") else default_location
     client = genai.Client(vertexai=True, project=project, location=location)
 
     parts = _to_gemini_parts(user_content)
@@ -162,7 +164,9 @@ async def _vertex_tool_loop(
     from google import genai
 
     project = os.environ.get("GCP_PROJECT_ID")
-    location = os.environ.get("GCP_LOCATION", "europe-north1")
+    default_location = os.environ.get("GCP_LOCATION", "europe-north1")
+    # Gemini 3.x models require "global" location
+    location = "global" if model.startswith("gemini-3") else default_location
     client = genai.Client(vertexai=True, project=project, location=location)
 
     gemini_tools = _to_gemini_tools(tools)

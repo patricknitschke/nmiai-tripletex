@@ -118,14 +118,46 @@ DELETED: interpreter.py, router.py, fallback.py (all dead code)
 - P4: Vertex NoneType crash — Gemini returned empty response parts
   → Fixed: None guard in client.py
 
+### Phase 9 continued: Senior mode + bug fixes — MOSTLY COMPLETE
+**Session: 2026-03-20 (evening)**
+
+**Senior Accountant mode deployed as default:**
+- Built single-agent fast path (run_senior_accountant) — 20.2s vs 88.8s for Chief mode on same prompt
+- AGENT_MODE env var: "senior" (default) or "chief"
+- Senior uses: execute_workflow + lookup_api + raw API tools, 15 max iterations, 100s deadline
+
+**Competition bug fixes deployed:**
+- 100s deadline with 20s buffer before 120s cloudflare timeout
+- BETA endpoint audit: only entitlement was BETA → removed entirely
+- Employee search-before-create by email (handles pre-existing resources)
+- Project startDate defaults to today
+- VAT cache resets per client instance
+- Gemini 3.x location routing: auto-routes to "global" location
+
+**Phase 10: API Knowledge Tool — COMPLETE:**
+- Built src/agent/api_spec.py: search_endpoints, get_endpoint, find_enum, lookup
+- Exposed as lookup_api tool for Senior + Sub-agent
+- BETA endpoints flagged with warnings
+- Sub-agent prompt: "use lookup_api BEFORE retrying on 4xx"
+
+**Model comparison testing (same Nynorsk invoice+payment prompt):**
+| Model | Time | Iterations | Errors | Invoice Total | Score |
+|-------|------|-----------|--------|---------------|-------|
+| gemini-2.5-flash | 42.1s | 3 | 0 | 61,312.50 (with 25% VAT) | 0/8 |
+| gemini-2.5-pro | 18.6s | 3 | 0 | 49,050 (no VAT added) | 0/8 |
+| gemini-3.1-pro-preview | 42.0s | 4 | 2 (dup products) | 49,050 (no VAT added) | 0/8 |
+
+All models score 0/8 — the issue is price/VAT interpretation ("til 25500 kr"), not model capability.
+Gemini 3.x models need "global" location (not us-central1).
+
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 9h — redeploying with competition bug fixes |
-| Where am I going? | Deploy v04, test with Spanish invoice+payment prompt, monitor scores |
-| What's the goal? | Multi-step tasks (invoice → payment) should work end-to-end with correct IDs passed between steps |
-| What have I learned? | Steps MUST pass actual results (IDs) to subsequent steps. Chief hallucinated when it didn't have real data. Fallback must be explicit. |
-| What have I done? | 4 critical bug fixes: result passing, customer name merge, fallback behavior, Vertex crash guard |
+| Where am I? | Phase 10 complete. Model testing + competition monitoring. |
+| Where am I going? | Resolve VAT interpretation issue, decide model, Phase 11 (hybrid mode) |
+| What's the goal? | Score >0 on the invoice+payment prompts. Deploy best model for competition. |
+| What have I learned? | All models interpret "til X kr" as excl-VAT. This is likely wrong for competition scoring. VAT handling is the #1 blocker. |
+| What have I done? | API knowledge tool, Senior mode, all competition bug fixes, model comparison across 3 Gemini variants. |
 
 ---
 *Update after completing each phase or encountering errors*
