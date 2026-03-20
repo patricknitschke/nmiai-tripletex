@@ -12,6 +12,7 @@ import json
 import logging
 from datetime import date
 
+from ..api_spec import lookup as api_lookup
 from ..llm import complete
 from ..utils import build_content, parse_json
 from ..workflows.schemas import TASK_SCHEMAS
@@ -176,9 +177,21 @@ async def chief_answer(
     )
 
     content = build_content(prompt, files)
+
+    # Auto-include relevant API spec info if question mentions field names or errors
+    api_context = ""
+    question_lower = question.lower()
+    if any(kw in question_lower for kw in ["field", "error", "failed", "422", "400", "404", "parameter", "schema", "endpoint"]):
+        # Try to extract an endpoint or keyword from the question
+        for endpoint_keyword in ["/employee", "/customer", "/invoice", "/order", "/product",
+                                  "/department", "/project", "/travelExpense", "/ledger"]:
+            if endpoint_keyword.lower().lstrip("/") in question_lower:
+                api_context = f"\n\n## Verified API spec for reference:\n{api_lookup('POST ' + endpoint_keyword)}"
+                break
+
     content.append({
         "type": "text",
-        "text": f"\n---\nSub-agent's new question:\n{question}",
+        "text": f"{api_context}\n\n---\nSub-agent's new question:\n{question}",
     })
 
     answer = await complete(system, content)

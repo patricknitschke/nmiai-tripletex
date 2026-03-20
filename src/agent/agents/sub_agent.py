@@ -11,6 +11,7 @@ Responsibilities:
 import json
 import logging
 
+from ..api_spec import lookup as api_lookup
 from ..llm import tool_use_loop
 from ..tripletex import TripletexClient
 from ..workflows import WORKFLOWS
@@ -146,6 +147,27 @@ SUB_AGENT_TOOLS = [
             "required": ["endpoint"],
         },
     },
+    {
+        "name": "lookup_api",
+        "description": (
+            "Look up Tripletex API endpoint details from the OpenAPI spec. "
+            "Use this to find correct field names, enum values, required fields, "
+            "and available endpoints BEFORE guessing. Examples: "
+            "'POST /employee' for full schema, "
+            "'invoice' to search endpoints, "
+            "'template enum' for enum values."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Endpoint path (e.g. 'POST /employee'), keyword (e.g. 'invoice'), or enum query (e.g. 'userType enum')",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -180,12 +202,18 @@ Workflows handle dependency lookups (departments, VAT types, etc.) automatically
 3. **tripletex_get/post/put/delete** — Raw Tripletex API access. Use only when no \
 workflow fits or when you need to do something workflows don't support.
 
+4. **lookup_api** — Look up Tripletex API endpoint schemas, field names, and enum values \
+from the OpenAPI spec. Use BEFORE guessing field names or after getting a 4xx error. \
+Examples: lookup_api("POST /employee"), lookup_api("invoice"), lookup_api("template enum").
+
 ## Rules
 - FIRST ask the Chief for ALL the data values you need in ONE comprehensive question, \
   THEN call the workflow with that data.
 - Use the EXACT field names from the workflow spec above — do not rename or reformat them.
 - Do not guess or make up values — ask the Chief.
-- If a workflow returns an error, read it carefully. Ask the Chief for guidance if needed.
+- If a workflow or API call returns a 4xx error, use lookup_api to check the correct \
+  field names and enum values BEFORE retrying. Do NOT guess and retry blindly.
+- If you need to use raw API tools, use lookup_api first to get the correct endpoint schema.
 - Be EFFICIENT: ask one comprehensive question, then execute.
 - When done, stop calling tools and briefly confirm what you created/did.
 """
@@ -234,6 +262,13 @@ async def run_sub_agent(
     last_workflow_result: dict = {}
 
     async def execute_tool(name: str, input_data: dict) -> dict:
+        if name == "lookup_api":
+            query = input_data.get("query", "")
+            logger.info("Sub-agent → lookup_api('%s')", query)
+            result = api_lookup(query)
+            tool_trace.append({"tool": "lookup_api", "query": query})
+            return {"result": result}
+
         if name == "ask_chief":
             question = input_data.get("question", "")
             logger.info("Sub-agent asks Chief: %s", question)
@@ -251,7 +286,7 @@ async def run_sub_agent(
             logger.info("Sub-agent → execute_workflow('%s', %s)", wf_name, json.dumps(data))
             try:
                 result = await WORKFLOWS[wf_name](data, client)
-                has_error = "error" in result
+                has_error = "error" in result or (isinstance(result.get("status"), int) and result["status"] >= 400)
                 logger.info("Workflow '%s' %s: %s", wf_name, "FAILED" if has_error else "OK", json.dumps(result))
                 tool_trace.append({"tool": "execute_workflow", "workflow": wf_name, "ok": not has_error})
                 if not has_error:

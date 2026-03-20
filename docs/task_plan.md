@@ -14,6 +14,7 @@ POST /solve
       → Sub-agent has tools:
           - ask_chief(question) → Chief re-reads original prompt + remembers plan + prior Q&A
           - execute_workflow(name, data) → calls pre-built workflow functions
+          - lookup_api(query) → searches OpenAPI spec for field names, enums, endpoints
           - tripletex_get/post/put/delete → raw API fallback
       → Sub-agent pulls data from Chief as needed, then executes
       → Conversation log persisted per step (Chief remembers all Q&A)
@@ -84,14 +85,38 @@ Redesigned orchestrator from single-agent loop to true multi-agent with memory.
 - [x] **9f: Fix fallback behavior** — REVISED: "Do NOT call execute_workflow" was too aggressive.
   Portuguese prompt showed sub-agent couldn't use create_employee even when it would have worked.
   Fixed: fallback now allows workflows for known sub-tasks + raw API for unknown parts.
-- [ ] **9g: Fix 422 error detection** — BUG: workflow returns raw 422 JSON without `"error"` key,
-  sub-agent logs it as "OK". `has_error` check needs to also detect `"status": 4xx` in response.
+- [x] **9g: Fix 422 error detection** — `has_error` now checks for `"status": 4xx` in addition to `"error"` key.
 - [ ] **9h: Improve Chief planning for implicit prerequisites** — Chief doesn't infer that
   "register payment on invoice" in an empty account means "create invoice first".
-- [ ] **9i: Increase Chief plan max_tokens** — Portuguese prompt plan truncated mid-JSON → total fallback.
+- [x] **9i: Increase Chief plan max_tokens** — bumped to 4096 (was 2048, caused Portuguese truncation).
 - [ ] **9j: Add supplier invoice workflow** — French supplier invoice, no workflow.
-- [ ] **9k: Redeploy + retest**
-- [ ] **9l: Monitor competition scores**
+- [ ] **9k: Sub-agent quality-of-life improvements** — from "thinking as the agent" analysis:
+  - [ ] 9k-1: **Concise workflow results** — return `{"created": "customer", "id": 123, "name": "Luna SL"}`
+    instead of dumping the full API response blob. Sub-agent wastes context parsing walls of JSON.
+  - [ ] 9k-2: **Tool priority order in prompt** — `lookup_api` for field names > `ask_chief` for data
+    values > `execute_workflow` > raw API. Currently sub-agent trusts Chief for field names (wrong).
+  - [ ] 9k-3: **Iteration budget awareness** — sub-agent should know "You have ~10 iterations. Be decisive."
+    Prevents the 15-iteration spirals we've seen on Portuguese and Elvdal prompts.
+  - [ ] 9k-4: **Structured fallback strategy** — when in fallback mode, give a default approach:
+    "1. lookup_api to find relevant endpoints. 2. ask_chief for data values. 3. Execute."
+    Not just "use raw API tools."
+  - [ ] 9k-5: **Partial success reporting** — sub-agent should return what it DID create,
+    not just pass/fail. If it created customer + employee but failed on invoice, the next
+    step should know those resources exist.
+- [ ] **9l: Chief quality-of-life improvements** — from "thinking as the Chief" analysis:
+  - [ ] 9l-1: **Pass Chief thinking to sub-agent** — sub-agent should receive the Chief's
+    reasoning about approach, not just the task string. e.g. "I chose create_invoice because
+    it handles customer creation internally via the customer object."
+  - [ ] 9l-2: **Richer execution feedback** — Chief should see what API calls were made, not
+    just `{"id": 123}`. e.g. "Created customer Luna SL (org 800572525) with id 108266620.
+    Created invoice #1, total 12875 NOK incl VAT." Lets Chief verify correctness during review.
+  - [ ] 9l-3: **Review after failures** — currently review only runs between successful steps.
+    Chief should review after failures too, so it can replan. "Step 1 failed because X.
+    Should I retry with different approach or adjust remaining steps?"
+  - [ ] 9l-4: **Concise planning prompt** — tell Chief explicitly: "Keep thinking under 100 words.
+    Keep each step task description under 50 words. Be compact." Prevents token truncation.
+- [ ] **9m: Redeploy + retest**
+- [ ] **9n: Monitor competition scores**
 
 ### Phase 10: API Knowledge Tool (OpenAPI Lookup)
 Build FIRST — gives the generic sub-agent an immediate boost, and every specialist
@@ -116,11 +141,11 @@ lookup_api(query)  → searches OpenAPI spec, returns endpoint details, enums, r
 ```
 
 **Implementation:**
-- [ ] **10a: Build lookup module** — `src/agent/api_spec.py`, wraps OpenAPI JSON
-  - Functions: search_endpoints(keyword), get_endpoint_schema(path, method), get_enum_values(path, field)
-- [ ] **10b: Expose as agent tool** — add `lookup_api` to sub-agent tool list
-- [ ] **10c: Error recovery pattern** — on 4xx, agent queries the spec before retrying
-- [ ] **10d (future): MCP server** — if we need interoperability, wrap with `mcp` Python SDK
+- [x] **10a: Build lookup module** — `src/agent/api_spec.py` with search_endpoints, get_endpoint, find_enum, lookup
+- [x] **10b: Expose as agent tool** — `lookup_api` added to SUB_AGENT_TOOLS (7th tool)
+- [x] **10c: Error recovery pattern** — sub-agent prompt says "use lookup_api BEFORE retrying on 4xx"
+- [x] **10d: Chief auto-includes spec** — when answering error/field questions, Chief auto-looks up relevant endpoint
+- [ ] **10e (future): MCP server** — if we need interoperability, wrap with `mcp` Python SDK
 
 **File structure:**
 ```
@@ -202,6 +227,37 @@ src/agent/agents/
 | Invoice (T1) | Wrong product data | Product numbers + VAT rates not extracted | **7b** — extract and create products |
 | Travel expense (T2) | Wrong employee | Named employee ignored, used first available | **7c** — create employee from prompt |
 | Travel expense (T2) | Per diem as cost line | Tagegeld should use perDiemCompensations | **7d** — separate per diem handling |
+
+## Known Weaknesses (as of Phase 10)
+
+**Orchestrator level:**
+1. **No retry on failure** — sub-agent fails → orchestrator records "completed" and moves on.
+   Should detect failure and retry or ask Chief to replan.
+2. **No timeout management** — 300s budget, nothing tracks elapsed time. Sub-agent can burn
+   130s leaving no time for remaining steps.
+3. **Chief review often wasted** — almost always "continue as planned". Skip unless step failed.
+
+**Sub-agent level (addressed in 9k):**
+4. **Workflow results flood context** — full API response JSON makes it hard for the LLM to
+   find the relevant ID. Need concise summaries. (9k-1)
+5. **Trusts Chief over spec for field names** — Chief hallucinates field names, sub-agent
+   should prefer lookup_api for API details. (9k-2)
+6. **No sense of iteration budget** — happily spirals for 15 iterations. Needs awareness. (9k-3)
+7. **Fallback mode has no strategy** — just "use raw API" with no structured approach. (9k-4)
+8. **All-or-nothing reporting** — can't report partial success. (9k-5)
+
+**Chief level (addressed in 9l):**
+9. **Sub-agent ignores Chief's reasoning** — Chief thinks carefully about approach, but
+   sub-agent only sees the task string, not the reasoning. Wastes the thinking step. (9l-1)
+10. **Reviews blind** — Chief only sees `{"id": 123}`, can't verify if the work was done
+    correctly (right org number? right VAT?). Reviews are rubber stamps. (9l-2)
+11. **No review after failure** — if sub-agent fails, Chief never gets to intervene
+    and replan. Only reviews between successful steps. (9l-3)
+12. **Can't infer implicit prerequisites** (9h) — "register payment on invoice" in empty
+    account should mean "create invoice first". Needs specialist agents.
+
+**Coverage gaps:**
+13. **Missing workflows** — supplier invoices, time registration, project invoices. Phase 11.
 
 ## Notes
 - Competition is LIVE (March 19-22, 2026)
