@@ -75,7 +75,9 @@
       "Bash(python -c \":*)",
       "Bash(python -c \"from src.agent.orchestrator import run_chief_accountant, SUB_AGENT_TOOLS, _build_workflow_catalog; print\\(''Import OK''\\); print\\(f''{len\\(SUB_AGENT_TOOLS\\)} sub-agent tools''\\); print\\(f''Tools: {[t[\"\"name\"\"] for t in SUB_AGENT_TOOLS]}''\\)\")",
       "Bash(python -c \"from src.agent.server import app; print\\(''Server OK''\\)\")",
-      "Bash(md5 src/agent/orchestrator.py)"
+      "Bash(md5 src/agent/orchestrator.py)",
+      "Bash(ls -la src/agent/*.py src/agent/workflows/*.py)",
+      "Read(//Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/**)"
     ]
   },
   "enabledMcpjsonServers": [

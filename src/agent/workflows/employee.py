@@ -64,10 +64,10 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
     # Step 3: Assign role/entitlements if requested
     role = data.get("role", "").lower().strip()
     if role and any(kw in role for kw in ADMIN_KEYWORDS):
-        logger.info("Assigning admin entitlements for employee %d", employee_id)
+        logger.info("Assigning admin entitlements (ALL_PRIVILEGES) for employee %d", employee_id)
         await client.put(
             "/employee/entitlement/:grantEntitlementsByTemplate",
-            params={"employeeId": str(employee_id), "template": "administrator"},
+            params={"employeeId": str(employee_id), "template": "ALL_PRIVILEGES"},
         )
 
     return result

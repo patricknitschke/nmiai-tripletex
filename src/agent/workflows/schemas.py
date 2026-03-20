@@ -2,16 +2,12 @@
 Schema registry for Tripletex API fields, derived from the OpenAPI spec.
 
 Each task_type maps to a dict with:
-- "fields": list of field definitions for LLM extraction
+- "fields": list of field definitions (name, type, required, description)
 - "api_endpoint": the Tripletex endpoint used
-- "notes": any special instructions for the LLM
+- "notes": special instructions about how the workflow works
 
-Field definitions have:
-- "name": exact API field name
-- "type": the JSON type to produce
-- "required": whether the field is required
-- "description": human-readable description for the LLM
-- "aliases": alternative names the prompt might use (helps LLM map)
+Used by the Chief to build its workflow catalog and by sub-agents
+to get exact field specs for each workflow.
 """
 
 TASK_SCHEMAS: dict[str, dict] = {
@@ -200,41 +196,3 @@ TASK_SCHEMAS: dict[str, dict] = {
         ],
     },
 }
-
-# Task types list for the classifier
-KNOWN_TASK_TYPES = list(TASK_SCHEMAS.keys())
-
-
-def get_extraction_prompt(task_type: str) -> str:
-    """Build an extraction prompt with the exact field schema for a task type."""
-    schema = TASK_SCHEMAS.get(task_type)
-    if not schema:
-        return ""
-
-    lines = [
-        f"Extract the following fields for task '{task_type}'.",
-        f"API endpoint: {schema['api_endpoint']}",
-        f"Notes: {schema['notes']}",
-        "",
-        "Fields to extract (use these exact field names in your JSON output):",
-    ]
-
-    for field in schema["fields"]:
-        req = "REQUIRED" if field.get("required") else "optional"
-        lines.append(f"  - {field['name']} ({field['type']}, {req}): {field['description']}")
-        if "items" in field:
-            lines.append(f"    Each item has:")
-            for item in field["items"]:
-                lines.append(f"      - {item['name']} ({item['type']}): {item['description']}")
-
-    lines.extend([
-        "",
-        "IMPORTANT:",
-        "- Use the EXACT field names listed above.",
-        "- For dates, use YYYY-MM-DD format.",
-        "- Only include fields that are mentioned or clearly implied in the prompt.",
-        "- Do NOT guess IDs for entities (employees, customers, etc.) — the workflow will look them up.",
-        "- Return ONLY valid JSON: {\"data\": { ... }}",
-    ])
-
-    return "\n".join(lines)
