@@ -3,43 +3,38 @@
 ## Goal
 Build a Python AI agent (FastAPI + Claude/Gemini) that receives accounting task prompts via `/solve`, interprets them with an LLM to extract task type + structured data, then executes pre-built workflows with minimal API calls. Deploy to GCP Cloud Run for the NM i AI competition (March 19-22, 2026).
 
-## Architecture (v4 — Senior Accountant + modes)
+## Architecture (v5 — Hybrid: Chief + Specialists)
 
-**Default: Senior Accountant (AGENT_MODE=senior)**
+**Default: Hybrid mode (AGENT_MODE=hybrid)**
 ```
 POST /solve (100s deadline)
-  → Senior Accountant (single agent loop)
-    - Sees: full prompt + files + workflow catalog in system prompt
-    - Tools: execute_workflow, lookup_api, tripletex_get/post/put/delete
-    - Reads prompt, chains workflows directly, handles errors with lookup_api
-    - Typically 3-6 iterations, 15-50s
+  → Chief plans (1 LLM call, ~3-10s)
+    - Reads prompt, reasons about dependencies, produces step-by-step plan
+    - Safety net: if Chief "gives up", falls back to Senior directly
+  → Each step routed to the right specialist agent
+    - Invoice, Employee, Travel, General, Corrections, AP
+    - Each specialist has domain-specific prompt + shared tools
+    - Results (IDs, created resources) flow between steps
 ```
 
-**Alternative: Chief multi-agent (AGENT_MODE=chief)**
+**Fallback: Senior Accountant (AGENT_MODE=senior)**
 ```
-POST /solve
-  → Chief plans → sub-agents execute per step → Chief reviews between steps
-  → More overhead but better for complex multi-step coordination
-```
-
-**Planned: Hybrid mode (AGENT_MODE=hybrid)**
-```
-POST /solve
-  → Chief THINKS + produces plan (1 LLM call)
-  → Senior executes with plan as context preamble
-  → Best of both: strategic planning + direct execution
+POST /solve (100s deadline)
+  → Senior Accountant (single agent loop, no planning)
+    - Direct execution with full prompt + workflow catalog
 ```
 
 **Key design principles:**
-- Senior Accountant is the fast path — handles 80% of tasks directly
-- Fresh empty environment is a first-class concept — all prompts know everything must be created
-- lookup_api tool gives agents self-serve access to OpenAPI spec (field names, enums, endpoints)
-- BETA endpoints flagged and blocked — only non-BETA endpoints used in workflows
+- Hybrid mode is default — Chief plans, specialists execute
+- Fresh empty environment is a first-class concept — prompts describe desired end state, not existing state
+- lookup_api tool gives agents self-serve access to OpenAPI spec
+- BETA endpoints flagged and blocked
 - 100s deadline with 20s buffer before 120s cloudflare timeout
-- Workflows search-before-create (e.g., employee by email) to handle pre-existing resources
+- Workflows search-before-create (e.g., employee by email)
+- Safety net: bad Chief plans (e.g. "can't proceed") are detected and bypassed
 
 ## Current Phase
-Phase 12 MOSTLY COMPLETE — 6 specialists built, hybrid mode routes to them. Next: test hybrid vs senior, then T3 workflows.
+Deploying v09 with B1+B3 fixes + specialist routing. Dead code (chief mode, sub_agent) removed. Next: monitor scores, then T3 workflows (Saturday).
 
 ## Phases
 
@@ -69,16 +64,10 @@ Real competition tasks revealed critical gaps. All fixed in code:
 - [x] **7d: Per diem** — extracted separately in schema, added as cost line (not dedicated endpoint yet)
 - [x] **7e: Schemas updated** — all 11 schemas now expose every field workflows actually read
 
-### Phase 8: Multi-Agent Chief Accountant — COMPLETE
-Redesigned orchestrator from single-agent loop to true multi-agent with memory.
-
-- [x] **8a: Chief as solution architect** — thinks through dependencies, produces {thinking, steps} plan
-- [x] **8b: Sub-agent with ask_chief tool** — pulls data from Chief on demand, has workflow field specs
-- [x] **8c: Persistent Chief memory** — thinking + plan stored as `chief_memory`, included in every Chief answer call
-- [x] **8d: Per-step conversation logs** — each Chief ↔ sub-agent pair maintains Q&A history
-- [x] **8e: Fresh environment awareness** — all prompts know the account starts empty
-- [x] **8f: Workflow field specs in sub-agent prompt** — sub-agent sees exact field names, no guessing
-- [x] **8g: Schemas audit** — all 11 schemas updated to expose every field workflows actually read
+### Phase 8: Multi-Agent Chief Accountant — COMPLETE (then simplified)
+Originally built Chief + sub-agent + review loop. Later replaced by hybrid mode
+(Chief plans → specialists execute). Sub-agent, chief_answer, chief_review removed as dead code.
+Only `chief_plan()` survives — used by hybrid mode.
 
 ### Phase 9: Test + Deploy Multi-Agent — MOSTLY COMPLETE
 - [x] **9a: Local testing** — supplier, employee, travel expense all working
@@ -110,38 +99,14 @@ Redesigned orchestrator from single-agent loop to true multi-agent with memory.
 - [x] **10d: Chief auto-includes spec** — auto-looks up relevant endpoint when answering field questions
 - [ ] **10e (future): MCP server** — wrap with `mcp` Python SDK if needed for interoperability
 
-### Phase 11: Hybrid Mode — Chief Plans, Senior Executes
-Combine the Chief's strategic planning with the Senior's direct execution.
-Eliminates the communication overhead that killed Chief mode performance.
+### Phase 11: Hybrid Mode — Chief Plans, Specialists Execute — COMPLETE
+- [x] **11a: Hybrid orchestrator** — Chief plans (1 LLM call) → routes to specialists
+- [x] **11b: Result passing** — each step's workflow_result flows to the next specialist as prior_results
+- [x] **11c: Safety net** — detects bad Chief plans ("can't proceed") → falls back to Senior
+- [x] **11d: B3 fix** — strengthened Chief's fresh-env prompt with explicit prerequisite examples
+- [x] **11e: Dead code removal** — removed chief mode, sub_agent.py, chief_answer, chief_review
 
-**Evidence from competition testing (same Spanish invoice+payment prompt):**
-
-| | Senior mode | Chief mode |
-|---|---|---|
-| Time | **20.2s** | 88.8s |
-| Iterations | **6** | 10 |
-| API errors | **1** | 3 |
-| Completed? | **Yes** | No — invoice failed 3x, payment never attempted |
-
-Chief's planning was actually good (correct 2-step plan), but sub-agents wasted time
-on communication, couldn't see each other's results, and got stuck on VAT errors.
-
-**Architecture:**
-```
-POST /solve
-  → Chief THINKS + produces plan (1 LLM call, ~3s)
-  → Plan injected as preamble into Senior's system prompt
-  → Senior executes with: original prompt + Chief's thinking + plan + all tools
-  → Senior follows the plan but can deviate if needed
-```
-
-**Implementation:**
-- [x] **11a: New mode "hybrid"** in orchestrator.py — Chief plans, specialists execute each step
-- [x] **11b: Inject Chief thinking into specialist context** — task description + prior results passed
-- [x] **11c: Update AGENT_MODE** — supports "senior", "hybrid", "chief"
-- [ ] **11d: Test + compare** — run same prompts across all 3 modes
-
-**Config:** `AGENT_MODE=senior | hybrid | chief`
+**Config:** `AGENT_MODE=hybrid` (default) or `senior` (fallback)
 
 ### Phase 12: Specialist Domain Agents — MOSTLY COMPLETE
 6 specialists built, 16 workflow routes. Each has domain-specific system prompt + shared tools.
@@ -195,7 +160,7 @@ src/agent/agents/specialists/
 | Schema-driven workflows | Field names/types from OpenAPI spec, not LLM guessing |
 | Pre-built workflows per task type | Exact minimum API calls, max efficiency bonus |
 | Vertex AI (Gemini) | Tested 2.5-flash (42s), 2.5-pro (19s), 3.1-pro-preview (42s). All score 0/8 on same prompt — issue is VAT interpretation, not model. 2.5-pro fastest. 3.x needs "global" location. |
-| **Senior Accountant as default** | Single agent loop beats multi-agent for competition tasks. 20s vs 89s on same prompt. Direct tool access, no communication overhead. Chief mode available for complex tasks. |
+| **Hybrid as default, Senior as fallback** | Chief plans + specialists execute. Senior available as AGENT_MODE=senior. Old chief mode (sub-agents + review) removed — too slow (89s vs 20-30s). |
 | **lookup_api tool** | Agents self-serve from OpenAPI spec. Prevents field name guessing (saved 5+ iterations on Elvdal/Portuguese prompts). Flags BETA endpoints. |
 | **100s deadline** | Cloudflare kills at 120s. 20s buffer ensures we always return "completed". |
 | **Search-before-create pattern** | Competition accounts may have pre-existing resources. Employee workflow searches by email first. |
@@ -239,4 +204,5 @@ src/agent/agents/specialists/
 - **120s cloudflare timeout** — must return before this or score = 0
 - **BETA endpoints return 403** — do not use any [BETA] endpoint
 - Cloud Run project: ainm26osl-722
-- Default mode: AGENT_MODE=senior
+- Default mode: AGENT_MODE=hybrid
+- Bugs + missing workflows tracked in docs/bugs_backlog.md
