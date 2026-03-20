@@ -193,12 +193,20 @@ async def run_senior_accountant(
     files: list,
     client: TripletexClient,
     deadline: float | None = None,
+    plan_preamble: str | None = None,
 ) -> dict:
-    """Run the Senior Accountant — single agent, fast path."""
+    """Run the Senior Accountant — single agent, fast path.
+
+    If plan_preamble is provided (hybrid mode), it's injected into the system prompt
+    so the Senior can follow the Chief's strategic plan while executing directly.
+    """
 
     today = date.today().isoformat()
     catalog = _build_workflow_catalog()
     system = SYSTEM_PROMPT.format(today=today, workflow_catalog=catalog)
+
+    if plan_preamble:
+        system += f"\n\n## Chief Accountant's Plan (follow this strategy)\n{plan_preamble}\n"
 
     content = build_content(prompt, files)
 

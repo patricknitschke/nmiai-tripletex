@@ -3,6 +3,7 @@ Orchestrator — routes tasks to the right execution mode.
 
 Modes:
   - "senior": Single Senior Accountant agent (fast path, default)
+  - "hybrid": Chief plans (1 LLM call) → Senior executes with plan as context
   - "chief": Multi-agent Chief + sub-agents (complex tasks, multi-step coordination)
 
 Set via AGENT_MODE env var. Defaults to "senior".
@@ -19,7 +20,7 @@ from .tripletex import TripletexClient
 
 logger = logging.getLogger("agent.orchestrator")
 
-AGENT_MODE = os.environ.get("AGENT_MODE", "senior").lower()
+AGENT_MODE = os.environ.get("AGENT_MODE", "hybrid").lower()
 
 
 async def solve_task(
@@ -33,8 +34,51 @@ async def solve_task(
 
     if AGENT_MODE == "chief":
         return await _run_chief_mode(prompt, files, client)
+    elif AGENT_MODE == "hybrid":
+        return await _run_hybrid_mode(prompt, files, client, deadline=deadline)
     else:
         return await run_senior_accountant(prompt, files, client, deadline=deadline)
+
+
+async def _run_hybrid_mode(
+    prompt: str,
+    files: list,
+    client: TripletexClient,
+    deadline: float | None = None,
+) -> dict:
+    """Hybrid mode: Chief plans (1 LLM call), Senior executes with plan as context."""
+
+    # Stage 1: Chief produces a strategic plan
+    logger.info("=" * 40)
+    logger.info("HYBRID MODE: Chief planning...")
+    thinking, steps = await chief_plan(prompt, files)
+
+    if not steps:
+        logger.warning("Chief produced empty plan, Senior will proceed without plan")
+        return await run_senior_accountant(prompt, files, client, deadline=deadline)
+
+    # Log the plan
+    for i, step in enumerate(steps, 1):
+        logger.info("  PLAN STEP %d: [%s] %s", i, step.get("suggested_workflow", "?"), step.get("task", ""))
+
+    # Build a readable preamble for the Senior
+    plan_lines = []
+    if thinking:
+        plan_lines.append(f"**Reasoning:** {thinking}")
+        plan_lines.append("")
+    plan_lines.append("**Steps to execute (in order):**")
+    for i, step in enumerate(steps, 1):
+        wf = step.get("suggested_workflow", "fallback")
+        task = step.get("task", "")
+        plan_lines.append(f"{i}. [{wf}] {task}")
+    plan_lines.append("")
+    plan_lines.append("Follow this plan but adapt if you encounter errors. "
+                      "Pass IDs from earlier steps to later ones.")
+    preamble = "\n".join(plan_lines)
+
+    # Stage 2: Senior executes with the plan injected
+    logger.info("HYBRID MODE: Senior executing with plan...")
+    return await run_senior_accountant(prompt, files, client, deadline=deadline, plan_preamble=preamble)
 
 
 async def _run_chief_mode(
