@@ -175,6 +175,17 @@ General Specialist: customers, suppliers, departments, products (simple CRUD)
 - [ ] **11e: Chief delegates to specialists** — route to right specialist based on plan
 - [ ] **11f: Chief consults before planning** — ask specialists "can you handle this?"
 
+**Task categories:**
+Each specialised agent will tackle tasks like these:
+
+Employees — Create employees, set roles, update contact info
+Customers & Products — Register customers, create products
+Invoicing — Create invoices, register payments, issue credit notes
+Travel Expenses — Register or delete travel expense reports
+Projects — Create projects linked to customers
+Corrections — Delete or reverse incorrect entries
+Departments — Create departments, enable accounting modules
+
 **File structure:**
 ```
 src/agent/agents/

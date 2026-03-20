@@ -82,7 +82,8 @@
       "Bash(gcloud run:*)",
       "Bash(python scripts/parse_openapi.py supplierInvoice)",
       "Bash(python scripts/parse_openapi.py voucher)",
-      "Bash(python scripts/parse_openapi.py \"POST /ledger/voucher\")"
+      "Bash(python scripts/parse_openapi.py \"POST /ledger/voucher\")",
+      "Bash(.venv/bin/python -c \"from src.agent.agents.specialists import SPECIALIST_ROUTING; print\\(''Specialists:'', len\\(SPECIALIST_ROUTING\\), ''routes''\\); [print\\(f''  {k} → {v.__module__.rsplit\\(\"\".\"\",1\\)[-1]}''\\) for k,v in SPECIALIST_ROUTING.items\\(\\)]\")"
     ]
   },
   "enabledMcpjsonServers": [
