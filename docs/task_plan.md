@@ -39,7 +39,7 @@ POST /solve
 - Workflows search-before-create (e.g., employee by email) to handle pre-existing resources
 
 ## Current Phase
-Phase 10 COMPLETE — API Knowledge Tool deployed. Model testing in progress. Senior mode is default for competition.
+Phase 12 MOSTLY COMPLETE — 6 specialists built, hybrid mode routes to them. Next: test hybrid vs senior, then T3 workflows.
 
 ## Phases
 
@@ -136,68 +136,52 @@ POST /solve
 ```
 
 **Implementation:**
-- [ ] **11a: New mode "hybrid"** in orchestrator.py — Chief plans, Senior executes with plan
-- [ ] **11b: Inject Chief thinking into Senior prompt** — add plan as preamble section
-- [ ] **11c: Update AGENT_MODE** — support "senior", "hybrid", "chief"
+- [x] **11a: New mode "hybrid"** in orchestrator.py — Chief plans, specialists execute each step
+- [x] **11b: Inject Chief thinking into specialist context** — task description + prior results passed
+- [x] **11c: Update AGENT_MODE** — supports "senior", "hybrid", "chief"
 - [ ] **11d: Test + compare** — run same prompts across all 3 modes
 
 **Config:** `AGENT_MODE=senior | hybrid | chief`
 
-### Phase 12: Specialist Domain Agents
-Build AFTER Phase 11 — each specialist inherits the `lookup_api` tool as failsafe.
-Build incrementally: start with Invoice Specialist (highest value), add others one by one.
+### Phase 12: Specialist Domain Agents — MOSTLY COMPLETE
+6 specialists built, 16 workflow routes. Each has domain-specific system prompt + shared tools.
+Hybrid mode routes each Chief plan step to the right specialist.
 
-**Evidence from competition that specialists would help:**
-- Elvdal AS: Chief didn't know "register payment" in empty account = create invoice first.
-  An Invoice Specialist would know this pattern immediately.
-- French supplier invoice: Sub-agent tried `create_invoice` (sales) for a purchase invoice.
-  An AP Specialist would know to use `POST /ledger/voucher` instead.
-- Chief gave wrong field names. Specialists know their own workflow field names perfectly.
-
-**Architecture vision:**
+**Architecture:**
 ```
-Chief reads prompt → identifies domain(s) → consults specialists → designs plan
+Chief plans (1 LLM call) → routes each step to specialist → results pass between steps
   ↓
-Each specialist has: domain knowledge + ask_chief + execute_workflow + raw API + lookup_api
+Each specialist has: domain knowledge + execute_workflow + lookup_api + raw API
   ↓
-Invoice Specialist: orders, products, VAT, bank accounts, payment registration
-AP Specialist: supplier invoices, vouchers, purchase ledger
-Employee Specialist: employee creation, roles, entitlements, departments
-Travel Specialist: travel expenses, cost lines, per diem
-General Specialist: customers, suppliers, departments, products (simple CRUD)
+Invoice Specialist: orders, invoices, payments (create_invoice, create_order, register_payment)
+Employee Specialist: employees, departments (create_employee, create_department)
+Travel Specialist: travel expenses, per diem (create_travel_expense, delete_travel_expense)
+General Specialist: customers, products, projects, fallback (create_customer, create_product, create_project)
+Corrections Specialist: credit notes, deletions, reversals (create_credit_note, delete_entry) [placeholder]
+AP Specialist: supplier invoices, vouchers (supplier_invoice, create_voucher) [placeholder — needs 9j]
 ```
 
-**Implementation (incremental):**
-- [ ] **11a: Invoice Specialist** — highest value, handles invoice + payment + credit note
-- [ ] **11b: AP Specialist** — supplier invoices via POST /ledger/voucher
-- [ ] **11c: Employee Specialist** — employee + entitlements + departments
-- [ ] **11d: Travel Specialist** — travel expenses + per diem
-- [ ] **11e: Chief delegates to specialists** — route to right specialist based on plan
-- [ ] **11f: Chief consults before planning** — ask specialists "can you handle this?"
-
-**Task categories:**
-Each specialised agent will tackle tasks like these:
-
-Employees — Create employees, set roles, update contact info
-Customers & Products — Register customers, create products
-Invoicing — Create invoices, register payments, issue credit notes
-Travel Expenses — Register or delete travel expense reports
-Projects — Create projects linked to customers
-Corrections — Delete or reverse incorrect entries
-Departments — Create departments, enable accounting modules
+**Implementation:**
+- [x] **12a: Invoice Specialist** — orders, invoices, payments, order→invoice conversion
+- [x] **12b: Employee Specialist** — employee + department, search-before-create knowledge
+- [x] **12c: Travel Specialist** — travel expenses, per diem vs regular costs
+- [x] **12d: General Specialist** — customers, suppliers, products, projects, fallback
+- [x] **12e: Corrections Specialist** — credit notes, delete entries (placeholder)
+- [x] **12f: AP Specialist** — supplier invoices via vouchers (placeholder — needs 9j workflow)
+- [x] **12g: Routing registry** — 16 routes mapping suggested_workflow → specialist
+- [x] **12h: Hybrid orchestrator** — routes each plan step to right specialist with result passing
 
 **File structure:**
 ```
-src/agent/agents/
-  chief.py                    # Chief: plan, consult, review
-  sub_agent.py                # Generic sub-agent (still used as default)
-  specialists/
-    __init__.py               # Registry: domain → specialist
-    invoice.py                # Invoice + order + payment + credit note
-    ap.py                     # Accounts Payable (supplier invoices, vouchers)
-    employee.py               # Employee + department
-    travel.py                 # Travel expense + per diem
-    general.py                # Customer, supplier, product (simple CRUD)
+src/agent/agents/specialists/
+  __init__.py               # Registry: 16 workflow → specialist routes
+  base.py                   # Shared tools, execute_tool, run_specialist_loop
+  invoice.py                # Invoice + order + payment
+  employee.py               # Employee + department
+  travel.py                 # Travel expense + per diem
+  general.py                # Customer, product, project, fallback
+  corrections.py            # Credit notes, deletions (placeholder)
+  ap.py                     # Supplier invoices, vouchers (placeholder)
 ```
 
 ### Phase 13: Tier 3 Workflows + Iteration
@@ -217,8 +201,8 @@ src/agent/agents/
 | **Search-before-create pattern** | Competition accounts may have pre-existing resources. Employee workflow searches by email first. |
 | **No BETA endpoints** | Competition blocks BETA endpoints with 403. All workflows audited, entitlement endpoint removed. |
 | **Fresh empty environment as first-class concept** | All prompts know account starts empty. "Not found" = "create it". |
-| **Hybrid mode (planned)** | Chief's strategic planning + Senior's direct execution. Best of both worlds. |
-| **Specialist agents (planned)** | Domain experts for invoice, AP, employee, travel. Each knows their API patterns. |
+| **Hybrid mode** | Chief plans (1 LLM call) → specialists execute each step. Combines strategic planning with domain expertise. No ask_chief overhead. |
+| **Specialist agents** | 6 domain specialists with focused system prompts. 16 workflow routes. Shared tools via base.py. AP and Corrections are placeholders pending workflows. |
 
 ## Errors from Competition (Phase 7)
 | Task | Error | Root Cause | Fix |

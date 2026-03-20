@@ -58,6 +58,17 @@ async def _run_hybrid_mode(
         logger.warning("Chief produced empty plan, falling back to Senior")
         return await run_senior_accountant(prompt, files, client, deadline=deadline)
 
+    # Safety net: detect if Chief "gave up" instead of planning
+    # Signs: single fallback step with language like "missing", "can't", "provide", "not available"
+    if len(steps) == 1 and steps[0].get("suggested_workflow") == "fallback":
+        task_text = steps[0].get("task", "").lower()
+        give_up_signals = ["missing", "can't proceed", "cannot proceed", "not available",
+                           "please provide", "invoice number is required", "not possible"]
+        if any(signal in task_text for signal in give_up_signals):
+            logger.warning("Chief plan looks like giving up: '%s'. Ignoring plan, Senior will handle directly.",
+                           steps[0].get("task", "")[:200])
+            return await run_senior_accountant(prompt, files, client, deadline=deadline)
+
     # Log the plan
     for i, step in enumerate(steps, 1):
         logger.info("  PLAN STEP %d: [%s] %s", i, step.get("suggested_workflow", "?"), step.get("task", ""))
