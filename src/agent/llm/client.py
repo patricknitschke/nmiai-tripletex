@@ -124,6 +124,8 @@ async def _anthropic_tool_loop(
 
         tool_results = []
         for block in response.content:
+            if block.type == "text" and block.text.strip():
+                logger.info("[Tool loop] Thinking: %s", block.text.strip())
             if block.type == "tool_use":
                 logger.info("[Tool loop] Tool: %s(%s)", block.name, json.dumps(block.input)[:200])
                 result = await execute_tool(block.name, block.input)
@@ -182,6 +184,12 @@ async def _vertex_tool_loop(
             if text:
                 logger.info("[Tool loop] Final text: %s", text[:200])
             return {"status": "completed", "iterations": iteration + 1}
+
+        # Log any thinking text before tool calls
+        all_parts = response.candidates[0].content.parts or []
+        for part in all_parts:
+            if hasattr(part, 'text') and part.text and part.text.strip() and not hasattr(part, 'function_call'):
+                logger.info("[Tool loop] Thinking: %s", part.text.strip())
 
         # Add assistant response to history
         contents.append(response.candidates[0].content)

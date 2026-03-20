@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 
 from ..tripletex import TripletexClient
 
@@ -53,7 +54,7 @@ async def register_payment(data: dict, client: TripletexClient) -> dict:
 
     params = {
         "id": str(invoice_id),
-        "paymentDate": data.get("paymentDate", data.get("date", "")),
+        "paymentDate": data.get("paymentDate", data.get("date", date.today().isoformat())),
         "paymentTypeId": str(payment_type_id),
         "paidAmount": str(data.get("amount", data.get("paidAmount", 0))),
     }

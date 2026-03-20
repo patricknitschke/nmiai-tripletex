@@ -1,20 +1,25 @@
 """
-Multi-agent orchestrator — wires together the Chief and sub-agents.
+Orchestrator — routes tasks to the right execution mode.
 
-Flow:
-  1. Chief plans (with thinking step)
-  2. For each step: sub-agent executes (with ask_chief for data)
-  3. Between steps: Chief reviews and adapts
+Modes:
+  - "senior": Single Senior Accountant agent (fast path, default)
+  - "chief": Multi-agent Chief + sub-agents (complex tasks, multi-step coordination)
+
+Set via AGENT_MODE env var. Defaults to "senior".
 """
 
 import json
 import logging
+import os
 
 from .agents import chief_plan, chief_review
+from .agents.senior import run_senior_accountant
 from .agents.sub_agent import run_sub_agent
 from .tripletex import TripletexClient
 
 logger = logging.getLogger("agent.orchestrator")
+
+AGENT_MODE = os.environ.get("AGENT_MODE", "senior").lower()
 
 
 async def solve_task(
@@ -22,7 +27,21 @@ async def solve_task(
     files: list,
     client: TripletexClient,
 ) -> dict:
-    """Run the multi-agent Chief Accountant orchestrator."""
+    """Route to the right execution mode."""
+    logger.info("Agent mode: %s", AGENT_MODE)
+
+    if AGENT_MODE == "chief":
+        return await _run_chief_mode(prompt, files, client)
+    else:
+        return await run_senior_accountant(prompt, files, client)
+
+
+async def _run_chief_mode(
+    prompt: str,
+    files: list,
+    client: TripletexClient,
+) -> dict:
+    """Multi-agent Chief Accountant orchestrator."""
 
     # Stage 1: Chief plans (with thinking)
     logger.info("=" * 40)
