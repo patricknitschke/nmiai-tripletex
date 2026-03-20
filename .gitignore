@@ -207,8 +207,5 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Large OpenAPI spec (3.7MB) — use docs/api_reference.json instead
-docs/tripletex_openapi.json
-
 # Reference code from mariusud's tripletex-mcp repository
 tripletex-mcp-main/
