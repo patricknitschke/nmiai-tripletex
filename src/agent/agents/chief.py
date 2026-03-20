@@ -101,7 +101,7 @@ async def chief_plan(prompt: str, files: list) -> tuple[str, list[dict]]:
     system = PLAN_PROMPT.format(today=today, workflow_catalog=catalog)
 
     content = build_content(prompt, files)
-    raw = await complete(system, content)
+    raw = await complete(system, content, max_tokens=4096)
     logger.info("Chief plan raw: %s", raw)
 
     try:

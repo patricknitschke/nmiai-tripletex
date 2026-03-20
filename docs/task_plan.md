@@ -81,20 +81,17 @@ Redesigned orchestrator from single-agent loop to true multi-agent with memory.
 - [x] **9e: Fix customer name merge** — `_ensure_customer` now merges `customerName` into customer object
   - Previously: `{"customer": {"organizationNumber": "..."}}` → 422 (name required)
   - Now: falls back to `customerName` field if customer object has no name
-- [x] **9f: Fix fallback behavior** — Sub-agent now respects `suggested_workflow: "fallback"`
-  - When fallback: sub-agent sees "No workflow. Use raw API tools. Do NOT call execute_workflow."
-  - Previously: sub-agent ignored fallback and tried execute_workflow anyway
+- [x] **9f: Fix fallback behavior** — REVISED: "Do NOT call execute_workflow" was too aggressive.
+  Portuguese prompt showed sub-agent couldn't use create_employee even when it would have worked.
+  Fixed: fallback now allows workflows for known sub-tasks + raw API for unknown parts.
 - [ ] **9g: Fix 422 error detection** — BUG: workflow returns raw 422 JSON without `"error"` key,
   sub-agent logs it as "OK". `has_error` check needs to also detect `"status": 4xx` in response.
 - [ ] **9h: Improve Chief planning for implicit prerequisites** — Chief doesn't infer that
   "register payment on invoice" in an empty account means "create invoice first".
-  Needs stronger reasoning prompt about creating prerequisites for referenced resources.
-- [ ] **9i: Add supplier invoice workflow** — competition sent French supplier invoice, we have no workflow
-  - Option A: `POST /ledger/voucher` with manual postings (debit 6500 + input VAT, credit 2400)
-  - Option B: Rely on fallback sub-agent with raw API tools (now fixed, won't crash)
-  - Need to research `POST /ledger/voucher` body schema + posting format
-- [ ] **9j: Redeploy + retest** — deploy with all fixes, test with Spanish invoice+payment prompt
-- [ ] **9i: Monitor competition scores**
+- [ ] **9i: Increase Chief plan max_tokens** — Portuguese prompt plan truncated mid-JSON → total fallback.
+- [ ] **9j: Add supplier invoice workflow** — French supplier invoice, no workflow.
+- [ ] **9k: Redeploy + retest**
+- [ ] **9l: Monitor competition scores**
 
 ### Phase 10: API Knowledge Tool (OpenAPI Lookup)
 Build FIRST — gives the generic sub-agent an immediate boost, and every specialist

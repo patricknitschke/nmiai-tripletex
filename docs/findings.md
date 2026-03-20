@@ -380,5 +380,17 @@ Step 1 (invoice) succeeded after 1 retry (customer name merge issue). Step 2 (pa
 sub-agent couldn't see Step 1's invoice ID — Chief hallucinated "simulated environment". Fixed in v04
 with result passing between steps.
 
+### T3: Project time registration + project invoice (Portuguese) — FAILED (0/8, 7/7 API errors)
+```
+Registe 17 horas para Carolina Pereira (carolina.pereira@example.org) na atividade "Testing" do projeto "Auditoria de segurança" para Estrela Lda (org. nº 834219662). Taxa horária: 1400 NOK/h. Gere uma fatura de projeto ao cliente com base nas horas registadas.
+```
+Failure chain: 1) Chief produced good 3-step plan but JSON was truncated mid-output → parse failed
+→ fell back to generic "complete the task". 2) Fallback prompt said "Do NOT call execute_workflow"
+→ sub-agent forced to use raw API. 3) Chief hallucinated fake employee fields (salaryType, active,
+startDate, nationality) → 7 consecutive 422s. 4) Hit max iterations.
+Key lesson: "Do NOT call execute_workflow" in fallback was too aggressive — sub-agent should still
+use workflows for known sub-tasks. Also needs: time registration workflow (POST /timesheet/entry)
+and project invoice workflow (POST /invoice/projectInvoice) for T3.
+
 ---
 *Update this file after every 2 view/browser/search operations*

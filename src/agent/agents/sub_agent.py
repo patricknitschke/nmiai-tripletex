@@ -208,10 +208,13 @@ async def run_sub_agent(
 
     if suggested_workflow == "fallback":
         workflow_spec = (
-            "## No pre-built workflow available for this task\n"
-            "Use the raw Tripletex API tools (tripletex_get/post/put/delete) directly.\n"
-            "Do NOT call execute_workflow — there is no workflow for this task type.\n"
-            "Ask the Chief for guidance on which API endpoints and payloads to use."
+            "## No single pre-built workflow covers this entire task\n"
+            "Use raw Tripletex API tools (tripletex_get/post/put/delete) for the parts "
+            "that don't match a workflow.\n"
+            "However, you CAN still use execute_workflow for known sub-tasks like "
+            "creating employees, customers, products, etc. — check if a workflow exists "
+            "before resorting to raw API calls.\n"
+            "Ask the Chief for guidance on which approach to use."
         )
     else:
         workflow_spec = build_workflow_spec(suggested_workflow)
