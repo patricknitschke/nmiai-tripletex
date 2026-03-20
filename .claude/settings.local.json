@@ -60,7 +60,10 @@
       "Bash(python -m uvicorn src.agent.server:app --host 0.0.0.0 --port 8080 --reload)",
       "Bash(curl -s -X POST http://localhost:8080/solve -H \"Content-Type: application/json\" -d '{:*)",
       "Bash(docker build:*)",
-      "Bash(gcloud config:*)"
+      "Bash(gcloud config:*)",
+      "Bash(curl -s https://pining-for-the-woods-tripletex-v01-532908969458.europe-north1.run.app/health)",
+      "Bash(curl -s -X POST https://pining-for-the-woods-tripletex-v01-532908969458.europe-north1.run.app/solve -H \"Content-Type: application/json\" -d '{:*)",
+      "Bash(curl -s https://pining-for-the-woods-tripletex-v01-370009516620.europe-north1.run.app/health)"
     ]
   },
   "enabledMcpjsonServers": [

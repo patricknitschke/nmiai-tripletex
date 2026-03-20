@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+.env
+.claude
+docs/tripletex_openapi.json
+docs/task_plan.md
+docs/findings.md
+docs/progress.md
+scripts/
+*.md
