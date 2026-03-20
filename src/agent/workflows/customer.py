@@ -14,19 +14,38 @@ async def create_customer(data: dict, client: TripletexClient) -> dict:
 
     if data.get("email"):
         payload["email"] = data["email"]
-    if data.get("phone"):
-        payload["phoneNumber"] = data["phone"]
-    if data.get("isSupplier"):
-        payload["isSupplier"] = data["isSupplier"]
+    if data.get("invoiceEmail"):
+        payload["invoiceEmail"] = data["invoiceEmail"]
+    if data.get("phone") or data.get("phoneNumber"):
+        payload["phoneNumber"] = data.get("phone") or data.get("phoneNumber")
     if data.get("organizationNumber"):
         payload["organizationNumber"] = data["organizationNumber"]
+    if data.get("isSupplier") is not None:
+        payload["isSupplier"] = data["isSupplier"]
+    if data.get("isPrivateIndividual") is not None:
+        payload["isPrivateIndividual"] = data["isPrivateIndividual"]
+    if data.get("language"):
+        payload["language"] = data["language"].upper()
+    if data.get("invoiceSendMethod"):
+        payload["invoiceSendMethod"] = data["invoiceSendMethod"].upper()
+    if data.get("invoicesDueIn") is not None:
+        payload["invoicesDueIn"] = data["invoicesDueIn"]
+        payload["invoicesDueInType"] = data.get("invoicesDueInType", "DAYS")
 
-    # Address fields
-    if data.get("address"):
+    # Address — accept both flat and nested formats
+    address = data.get("address") or data.get("postalAddress")
+    if address:
         payload["postalAddress"] = {
-            "addressLine1": data["address"].get("line1", ""),
-            "postalCode": data["address"].get("postalCode", ""),
-            "city": data["address"].get("city", ""),
+            "addressLine1": address.get("line1", address.get("addressLine1", "")),
+            "postalCode": address.get("postalCode", ""),
+            "city": address.get("city", ""),
+        }
+    if data.get("physicalAddress"):
+        pa = data["physicalAddress"]
+        payload["physicalAddress"] = {
+            "addressLine1": pa.get("line1", pa.get("addressLine1", "")),
+            "postalCode": pa.get("postalCode", ""),
+            "city": pa.get("city", ""),
         }
 
     logger.info("Creating customer: %s", payload.get("name"))

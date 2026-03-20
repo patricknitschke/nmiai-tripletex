@@ -9,7 +9,7 @@ Usage:
 import json
 import sys
 
-SPEC_PATH = "tripletex_openapi.json"
+SPEC_PATH = "docs/tripletex_openapi.json"
 
 # Endpoints we care about for the competition
 KEY_PATHS = [

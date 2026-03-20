@@ -9,12 +9,14 @@ async def create_department(data: dict, client: TripletexClient) -> dict:
     """Create a department in Tripletex."""
     payload = {
         "name": data.get("name", ""),
+        "departmentNumber": data.get("departmentNumber", "1"),
     }
 
-    if data.get("departmentNumber"):
-        payload["departmentNumber"] = data["departmentNumber"]
+    # Optional: link to a department manager (employee)
+    if data.get("departmentManagerId"):
+        payload["departmentManager"] = {"id": data["departmentManagerId"]}
 
-    logger.info("Creating department: %s", payload.get("name"))
+    logger.info("Creating department: %s (number: %s)", payload["name"], payload["departmentNumber"])
     result = await client.post("/department", payload)
 
     dept_id = result.get("value", {}).get("id")

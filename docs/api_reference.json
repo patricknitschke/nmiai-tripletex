@@ -1,0 +1,214 @@
+{
+  "_note": "Distilled Tripletex API reference for workflow development. From OpenAPI spec.",
+  "endpoints": {
+    "create_employee": {
+      "method": "POST",
+      "path": "/employee",
+      "required_fields": ["firstName", "lastName", "userType", "department.id"],
+      "payload": {
+        "firstName": "string",
+        "lastName": "string",
+        "email": "string",
+        "userType": "enum: STANDARD | EXTENDED | NO_ACCESS",
+        "department": {"id": "int (existing dept)"},
+        "employeeNumber": "string (optional)",
+        "dateOfBirth": "string (optional, YYYY-MM-DD)",
+        "phoneNumberMobile": "string (optional)",
+        "bankAccountNumber": "string (optional)",
+        "nationalIdentityNumber": "string (optional)",
+        "address": {"addressLine1": "string", "postalCode": "string", "city": "string"}
+      },
+      "dependencies": ["GET /department?count=1 to get dept ID"]
+    },
+    "grant_entitlements": {
+      "method": "PUT",
+      "path": "/employee/entitlement/:grantEntitlementsByTemplate",
+      "note": "This is how you assign admin/roles — NOT via userType",
+      "query_params": {
+        "employeeId": "int (required)",
+        "template": "string (required — template name, needs sandbox testing)"
+      }
+    },
+    "create_customer": {
+      "method": "POST",
+      "path": "/customer",
+      "required_fields": ["name"],
+      "payload": {
+        "name": "string",
+        "isCustomer": "bool (default true)",
+        "email": "string",
+        "organizationNumber": "string",
+        "phoneNumber": "string",
+        "language": "enum: NO | EN",
+        "invoiceSendMethod": "enum: EMAIL | EHF | EFAKTURA | AVTALEGIRO | VIPPS | PAPER | MANUAL",
+        "isSupplier": "bool",
+        "invoiceEmail": "string",
+        "isPrivateIndividual": "bool",
+        "invoicesDueIn": "int",
+        "invoicesDueInType": "enum: DAYS | MONTHS | RECURRING_DAY_OF_MONTH",
+        "postalAddress": {"addressLine1": "string", "postalCode": "string", "city": "string"},
+        "physicalAddress": {"addressLine1": "string", "postalCode": "string", "city": "string"}
+      }
+    },
+    "create_department": {
+      "method": "POST",
+      "path": "/department",
+      "required_fields": ["name", "departmentNumber"],
+      "payload": {
+        "name": "string",
+        "departmentNumber": "string",
+        "departmentManager": {"id": "int (Employee ref, optional)"}
+      }
+    },
+    "create_product": {
+      "method": "POST",
+      "path": "/product",
+      "required_fields": ["name"],
+      "payload": {
+        "name": "string",
+        "number": "string",
+        "priceExcludingVatCurrency": "number",
+        "priceIncludingVatCurrency": "number",
+        "costExcludingVatCurrency": "number",
+        "vatType": {"id": "int (from GET /ledger/vatType)"},
+        "currency": {"id": "int"},
+        "department": {"id": "int"}
+      },
+      "dependencies": ["GET /ledger/vatType for VAT type IDs"]
+    },
+    "create_order": {
+      "method": "POST",
+      "path": "/order",
+      "required_fields": ["customer", "orderDate", "deliveryDate"],
+      "payload": {
+        "customer": {"id": "int"},
+        "orderDate": "string (YYYY-MM-DD)",
+        "deliveryDate": "string (YYYY-MM-DD)",
+        "invoiceComment": "string",
+        "receiverEmail": "string",
+        "reference": "string",
+        "orderLines": [{
+          "product": {"id": "int"},
+          "description": "string",
+          "count": "number",
+          "unitPriceExcludingVatCurrency": "number",
+          "vatType": {"id": "int"}
+        }]
+      },
+      "dependencies": ["Customer ID", "Product ID (optional, for order lines)", "VAT type ID"]
+    },
+    "create_invoice": {
+      "method": "POST",
+      "path": "/invoice",
+      "note": "Can include orders/orderLines inline OR reference existing orders",
+      "required_fields": ["customer", "invoiceDate", "invoiceDueDate"],
+      "query_params": {
+        "sendToCustomer": "bool (optional)",
+        "paymentTypeId": "int (optional)",
+        "paidAmount": "number (optional)"
+      },
+      "payload": {
+        "invoiceNumber": "int (0 = auto-generate)",
+        "invoiceDate": "string (YYYY-MM-DD)",
+        "invoiceDueDate": "string (YYYY-MM-DD)",
+        "customer": {"id": "int"},
+        "invoiceComment": "string",
+        "orders": [{"id": "int (existing order)"}],
+        "orderLines": [{
+          "product": {"id": "int"},
+          "description": "string",
+          "count": "number",
+          "unitPriceExcludingVatCurrency": "number",
+          "vatType": {"id": "int"}
+        }]
+      },
+      "dependencies": ["Customer ID", "Order ID or Product/VatType IDs for inline lines"]
+    },
+    "register_payment": {
+      "method": "PUT",
+      "path": "/invoice/{id}/:payment",
+      "note": "All params are query params, NOT body",
+      "query_params": {
+        "id": "int (invoice ID, required)",
+        "paymentDate": "string (YYYY-MM-DD, required)",
+        "paymentTypeId": "int (required, from GET /invoice/paymentType)",
+        "paidAmount": "number (required, in invoice currency)",
+        "paidAmountCurrency": "number (optional)"
+      },
+      "dependencies": ["Invoice ID", "GET /invoice/paymentType for payment type ID"]
+    },
+    "create_credit_note": {
+      "method": "PUT",
+      "path": "/invoice/{id}/:createCreditNote",
+      "note": "All params are query params",
+      "query_params": {
+        "id": "int (invoice ID, required)",
+        "date": "string (YYYY-MM-DD, required)",
+        "comment": "string (optional)",
+        "sendToCustomer": "bool (optional)"
+      },
+      "dependencies": ["Invoice ID"]
+    },
+    "create_travel_expense": {
+      "method": "POST",
+      "path": "/travelExpense",
+      "required_fields": ["employee"],
+      "payload": {
+        "employee": {"id": "int"},
+        "title": "string",
+        "project": {"id": "int (optional)"},
+        "department": {"id": "int (optional)"},
+        "date": "string (optional)",
+        "isChargeable": "bool",
+        "isCompleted": "bool"
+      },
+      "dependencies": ["Employee ID"]
+    },
+    "create_travel_expense_cost": {
+      "method": "POST",
+      "path": "/travelExpense/cost",
+      "required_fields": ["travelExpense"],
+      "payload": {
+        "travelExpense": {"id": "int"},
+        "vatType": {"id": "int"},
+        "currency": {"id": "int"},
+        "date": "string (YYYY-MM-DD)",
+        "description": "string",
+        "rate": "number",
+        "count": "number",
+        "amountCurrencyIncVat": "number",
+        "paymentType": "string (CASH, COMPANY_CARD, etc.)"
+      },
+      "dependencies": ["Travel expense ID", "VAT type ID"]
+    },
+    "create_project": {
+      "method": "POST",
+      "path": "/project",
+      "required_fields": ["name", "projectManager"],
+      "payload": {
+        "name": "string",
+        "number": "string or null (null = auto-generate)",
+        "description": "string",
+        "projectManager": {"id": "int (Employee ref)"},
+        "department": {"id": "int"},
+        "customer": {"id": "int"},
+        "startDate": "string (YYYY-MM-DD)",
+        "endDate": "string (YYYY-MM-DD)",
+        "isInternal": "bool",
+        "isFixedPrice": "bool",
+        "mainProject": {"id": "int (for sub-projects)"}
+      },
+      "dependencies": ["Employee ID (for projectManager)", "Customer ID (optional)", "Department ID (optional)"]
+    }
+  },
+  "lookup_endpoints": {
+    "department": "GET /department?count=1",
+    "employee": "GET /employee?count=1",
+    "customer_by_name": "GET /customer?name=X",
+    "product_by_number": "GET /product?number=X",
+    "vat_types": "GET /ledger/vatType",
+    "payment_types": "GET /invoice/paymentType",
+    "orders": "GET /order?orderDateFrom=X&orderDateTo=Y (both dates required)",
+    "invoices": "GET /invoice?invoiceDateFrom=X&invoiceDateTo=Y (both dates required)"
+  }
+}

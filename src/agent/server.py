@@ -1,8 +1,10 @@
 import logging
 import time
 
-from fastapi import FastAPI
 from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
 
 from .models import SolveRequest
 from .interpreter import interpret_task
@@ -58,6 +60,7 @@ async def solve(request: SolveRequest):
 
     except Exception as e:
         logger.exception("TASK FAILED with error: %s", e)
+        return {"status": "error", "message": str(e)}
 
     elapsed = time.time() - start
     logger.info("-" * 40)
@@ -66,4 +69,9 @@ async def solve(request: SolveRequest):
     logger.info("API errors (4xx): %d", client.error_count)
     logger.info("=" * 60)
 
-    return {"status": "completed"}
+    return JSONResponse(content={
+        "status": "completed", 
+        "result": result, 
+        "api_calls": client.call_count, 
+        "api_errors": client.error_count}
+    )
