@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(claude mcp:*)",
+      "WebFetch(domain:developer.tripletex.no)",
+      "Read(//Users/patricknitschke/.claude/skills/planning-with-files/templates/**)",
+      "Read(//Users/patricknitschke/.agents/skills/planning-with-files/templates/**)",
+      "Bash(python3 -c \"from src.agent.server import app; print\\(''Import OK''\\)\")",
+      "Bash(python3 -m venv .venv)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(pip install:*)",
+      "Bash(python3 -c \"from src.agent.server import app; print\\(''All imports OK''\\)\")",
+      "Bash(python3 -c \"from src.agent.server import app; from src.agent.llm import complete, tool_use_loop; print\\(''All imports OK''\\)\")",
+      "Bash(curl -s http://localhost:8080/health)",
+      "Bash(python3 -c \":*)",
+      "Read(//Users/patricknitschke/.config/gcloud/**)",
+      "Bash(chmod 600 ~/.config/gcloud/application_default_credentials.json)",
+      "Bash(python3 scripts/parse_openapi.py employee)",
+      "Bash(grep -A 100 \"^POST /employee$\")",
+      "Bash(python3 scripts/parse_openapi.py customer)",
+      "Bash(grep -A 60 \"^POST /customer$\")",
+      "Bash(grep -A 80 \"^POST /employee$\")",
+      "Bash(python3 scripts/parse_openapi.py entitlement)",
+      "Bash(grep -A 50 \"^POST /customer$\")",
+      "Bash(grep -A 100 \"^POST /customer$\")",
+      "Bash(python3 scripts/parse_openapi.py department)",
+      "Bash(grep -A 30 \"^POST /department$\")",
+      "Bash(python3 scripts/parse_openapi.py product)",
+      "Bash(grep -A 50 \"^POST /product$\")"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "nmiai"
+  ]
+}
