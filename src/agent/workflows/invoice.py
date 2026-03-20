@@ -11,6 +11,39 @@ def _today() -> str:
     return date.today().isoformat()
 
 
+async def _ensure_bank_account(client: TripletexClient) -> None:
+    """Ensure the company has a bank account registered (required for invoicing)."""
+    # Check if account 1920 (standard Norwegian bank account) exists
+    result = await client.get("/ledger/account", params={"number": "1920", "count": "1"})
+    accounts = result.get("values", [])
+    if accounts and accounts[0].get("bankAccountNumber"):
+        logger.info("Bank account already exists on account 1920")
+        return
+
+    # Create or update account 1920 with a dummy bank account number
+    if accounts:
+        # Account exists but has no bank number — update it
+        account_id = accounts[0]["id"]
+        logger.info("Updating account 1920 (id=%d) with bank account number", account_id)
+        await client.put(f"/ledger/account/{account_id}", {
+            "id": account_id,
+            "name": accounts[0].get("name", "Bank"),
+            "number": 1920,
+            "bankAccountNumber": "86011117947",
+            "isBankAccount": True,
+        })
+    else:
+        # Create account 1920
+        logger.info("Creating bank account (ledger account 1920)")
+        await client.post("/ledger/account", {
+            "name": "Bank",
+            "number": 1920,
+            "bankAccountNumber": "86011117947",
+            "isBankAccount": True,
+        })
+    logger.info("Bank account registered")
+
+
 async def _ensure_customer(data: dict, client: TripletexClient) -> int | None:
     """Get or create a customer, return its ID."""
     customer_id = data.get("customerId")
@@ -35,22 +68,61 @@ async def _ensure_customer(data: dict, client: TripletexClient) -> int | None:
     return None
 
 
-def _build_order_lines(lines: list[dict]) -> list[dict]:
-    """Build order lines from extracted line data."""
+async def _lookup_vat_type_by_rate(rate: float, client: TripletexClient, _cache: dict = {}) -> int | None:
+    """Find output (Utgående) VAT type ID by percentage rate (e.g. 25, 15, 0). Results are cached."""
+    if not _cache:
+        result = await client.get("/ledger/vatType", params={"count": "100"})
+        for vt in result.get("values", []):
+            pct = vt.get("percentage")
+            name = vt.get("name", "")
+            # Only cache "Utgående" (output/sales) VAT types — skip input, reversal, etc.
+            if pct is not None and "utgående" in name.lower():
+                # Prefer simple numbered codes (3, 31, 33) over special ones (UTTAK, TAP, etc.)
+                number = vt.get("number", "")
+                if pct not in _cache or number.isdigit():
+                    _cache[pct] = vt["id"]
+        logger.info("Cached %d output VAT types: %s", len(_cache), _cache)
+    return _cache.get(rate)
+
+
+async def _build_order_lines(lines: list[dict], client: TripletexClient) -> list[dict]:
+    """Build order lines from extracted line data. Creates products and resolves VAT types as needed."""
     order_lines = []
     for line in lines:
         ol = {}
 
+        # Resolve product: by ID, by number (create if needed), or use description
         product = line.get("product")
         product_id = line.get("productId")
+        product_number = line.get("productNumber")
+
         if product_id:
             ol["product"] = {"id": product_id}
         elif isinstance(product, dict) and "id" in product:
             ol["product"] = product
         elif isinstance(product, int):
             ol["product"] = {"id": product}
+        elif product_number:
+            # Try to find existing product by number first, create if not found
+            prod_name = line.get("description", f"Product {product_number}")
+            price = line.get("unitPriceExcludingVatCurrency", line.get("unitPrice", 0))
+
+            search = await client.get("/product", params={"number": str(product_number), "count": "1"})
+            existing = search.get("values", [])
+            if existing:
+                pid = existing[0]["id"]
+                ol["product"] = {"id": pid}
+                logger.info("Found existing product '%s' (number=%s, id=%d)", prod_name, product_number, pid)
+            else:
+                prod_payload = {"name": prod_name, "number": str(product_number)}
+                if price:
+                    prod_payload["priceExcludingVatCurrency"] = price
+                prod_result = await client.post("/product", prod_payload)
+                pid = prod_result.get("value", {}).get("id")
+                if pid:
+                    ol["product"] = {"id": pid}
+                    logger.info("Created product '%s' (number=%s, id=%d)", prod_name, product_number, pid)
         elif isinstance(product, str):
-            # LLM returned product name as string — use as description
             if not line.get("description"):
                 ol["description"] = product
 
@@ -61,9 +133,18 @@ def _build_order_lines(lines: list[dict]) -> list[dict]:
         if line.get("unitPrice") is not None or line.get("unitPriceExcludingVatCurrency") is not None:
             ol["unitPriceExcludingVatCurrency"] = line.get("unitPriceExcludingVatCurrency", line.get("unitPrice"))
 
+        # Resolve VAT type: by ID, by rate percentage, or from extracted data
         vat = line.get("vatType") or line.get("vatTypeId")
-        if vat is not None:
-            ol["vatType"] = {"id": vat} if isinstance(vat, int) else vat
+        vat_rate = line.get("vatRatePercent")
+        if isinstance(vat, int):
+            ol["vatType"] = {"id": vat}
+        elif isinstance(vat, dict) and "id" in vat:
+            ol["vatType"] = vat
+        elif vat_rate is not None:
+            vat_id = await _lookup_vat_type_by_rate(float(vat_rate), client)
+            if vat_id:
+                ol["vatType"] = {"id": vat_id}
+                logger.info("Resolved VAT type: %s%% → id=%d", vat_rate, vat_id)
 
         order_lines.append(ol)
     return order_lines
@@ -76,7 +157,7 @@ async def create_order(data: dict, client: TripletexClient) -> dict:
         logger.error("No customer ID available for order creation")
         return {"error": "No customer for order"}
 
-    order_lines = _build_order_lines(data.get("lines", data.get("orderLines", [])))
+    order_lines = await _build_order_lines(data.get("lines", data.get("orderLines", [])), client)
 
     payload = {
         "customer": {"id": customer_id},
@@ -106,7 +187,10 @@ async def create_order(data: dict, client: TripletexClient) -> dict:
 
 
 async def create_invoice(data: dict, client: TripletexClient) -> dict:
-    """Create an invoice. Flow: create order → invoice from order."""
+    """Create an invoice. Flow: ensure bank account → create order → invoice from order."""
+
+    # Prerequisite: company must have a bank account registered
+    await _ensure_bank_account(client)
 
     customer_id = await _ensure_customer(data, client)
     if not customer_id:
@@ -114,7 +198,7 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
         return {"error": "No customer for invoice"}
 
     # Build order lines from invoice line data
-    order_lines = _build_order_lines(data.get("lines", data.get("orderLines", [])))
+    order_lines = await _build_order_lines(data.get("lines", data.get("orderLines", [])), client)
 
     invoice_date = data.get("invoiceDate", _today())
     due_date = data.get("dueDate", data.get("invoiceDueDate", ""))

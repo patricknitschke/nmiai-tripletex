@@ -63,7 +63,19 @@
       "Bash(gcloud config:*)",
       "Bash(curl -s https://pining-for-the-woods-tripletex-v01-532908969458.europe-north1.run.app/health)",
       "Bash(curl -s -X POST https://pining-for-the-woods-tripletex-v01-532908969458.europe-north1.run.app/solve -H \"Content-Type: application/json\" -d '{:*)",
-      "Bash(curl -s https://pining-for-the-woods-tripletex-v01-370009516620.europe-north1.run.app/health)"
+      "Bash(curl -s https://pining-for-the-woods-tripletex-v01-370009516620.europe-north1.run.app/health)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''src/agent/workflows/invoice.py''\\).read\\(\\)\\); ast.parse\\(open\\(''src/agent/workflows/travel_expense.py''\\).read\\(\\)\\); ast.parse\\(open\\(''src/agent/schemas.py''\\).read\\(\\)\\); ast.parse\\(open\\(''src/agent/interpreter.py''\\).read\\(\\)\\); print\\(''All files parse OK''\\)\")",
+      "Bash(python -c \"from src.agent.server import app; print\\(''Server imports OK''\\)\")",
+      "Read(//Users/patricknitschke/**)",
+      "Bash(curl -s -u \"0:eyJ0b2tlbklkIjoyMTQ3Njg2NDA1LCJ0b2tlbiI6IjJhYjczNTIyLTQzZWUtNDY5OC05ZDI3LTQzYzFhNDM2M2UxMiJ9\" \"https://kkpqfuj-amager.tripletex.dev/v2/ledger/vatType?count=100\")",
+      "Bash(grep -E \"\\\\.\\(py|json|txt\\)$\")",
+      "Bash(python -c \"from src.agent.orchestrator import run_chief_accountant; print\\(''Import OK''\\)\")",
+      "Bash(python -c \"from src.agent.orchestrator import run_chief_accountant, TOOLS, _build_workflow_catalog; print\\(''Import OK''\\); print\\(f''{len\\(TOOLS\\)} tools defined''\\); catalog = _build_workflow_catalog\\(\\); print\\(f''Catalog: {len\\(catalog\\)} chars, {catalog.count\\(\"\"###\"\"\\)} workflows''\\)\")",
+      "Bash(python -c \"from src.agent.server import app; print\\(''Server import OK''\\); print\\([r.path for r in app.routes]\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"from src.agent.orchestrator import run_chief_accountant, SUB_AGENT_TOOLS, _build_workflow_catalog; print\\(''Import OK''\\); print\\(f''{len\\(SUB_AGENT_TOOLS\\)} sub-agent tools''\\); print\\(f''Tools: {[t[\"\"name\"\"] for t in SUB_AGENT_TOOLS]}''\\)\")",
+      "Bash(python -c \"from src.agent.server import app; print\\(''Server OK''\\)\")",
+      "Bash(md5 src/agent/orchestrator.py)"
     ]
   },
   "enabledMcpjsonServers": [

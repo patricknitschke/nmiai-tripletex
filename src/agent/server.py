@@ -7,8 +7,7 @@ from fastapi.responses import JSONResponse
 
 
 from .models import SolveRequest
-from .interpreter import interpret_task
-from .router import route_task
+from .orchestrator import solve_task
 from .tripletex import TripletexClient
 
 load_dotenv()
@@ -43,20 +42,10 @@ async def solve(request: SolveRequest):
     )
 
     try:
-        # Step 1: Interpret the task with Claude
+        # Multi-agent orchestrator: Chief plans → sub-agents execute → Chief adapts
         logger.info("-" * 40)
-        logger.info("STEP 1: Interpreting task with Claude...")
-        interpretation = await interpret_task(request.prompt, request.files)
-
-        task_type = interpretation.get("task_type", "unknown")
-        extracted_data = interpretation.get("data", {})
-        logger.info("Interpreted task_type: %s", task_type)
-        logger.info("Extracted data: %s", extracted_data)
-
-        # Step 2: Route and execute
-        logger.info("-" * 40)
-        logger.info("STEP 2: Routing to workflow...")
-        result = await route_task(task_type, extracted_data, client, request.prompt, request.files)
+        logger.info("Starting multi-agent orchestrator...")
+        result = await solve_task(request.prompt, request.files, client)
 
     except Exception as e:
         logger.exception("TASK FAILED with error: %s", e)

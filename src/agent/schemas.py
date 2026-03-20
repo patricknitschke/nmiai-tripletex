@@ -37,7 +37,7 @@ TASK_SCHEMAS: dict[str, dict] = {
     },
     "create_customer": {
         "api_endpoint": "POST /customer",
-        "notes": "name is the only required field. isCustomer defaults to true in the workflow.",
+        "notes": "name is the only required field. isCustomer defaults to true in the workflow. Also used for suppliers (leverandør) — set isSupplier to true.",
         "fields": [
             {"name": "name", "type": "string", "required": True, "description": "Company or person name"},
             {"name": "email", "type": "string", "required": False, "description": "General email"},
@@ -60,18 +60,19 @@ TASK_SCHEMAS: dict[str, dict] = {
         "fields": [
             {"name": "name", "type": "string", "required": True, "description": "Department name"},
             {"name": "departmentNumber", "type": "string", "required": True, "description": "Department number (unique identifier). Default to '1' if not specified."},
+            {"name": "departmentManagerId", "type": "integer", "required": False, "description": "Employee ID of the department manager"},
         ],
     },
     "create_product": {
         "api_endpoint": "POST /product",
-        "notes": "vatType is an object reference {id: int}. The workflow will look up the correct VAT type ID.",
+        "notes": "vatType is auto-resolved by the workflow if not specified. Department is optional.",
         "fields": [
             {"name": "name", "type": "string", "required": True, "description": "Product name"},
             {"name": "number", "type": "string", "required": False, "description": "Product number/SKU"},
-            {"name": "description", "type": "string", "required": False, "description": "Product description"},
             {"name": "costExcludingVatCurrency", "type": "number", "required": False, "description": "Cost/purchase price excluding VAT"},
             {"name": "priceExcludingVatCurrency", "type": "number", "required": False, "description": "Selling price excluding VAT"},
             {"name": "priceIncludingVatCurrency", "type": "number", "required": False, "description": "Selling price including VAT"},
+            {"name": "departmentId", "type": "integer", "required": False, "description": "Department ID to link product to"},
         ],
     },
     "create_order": {
@@ -87,11 +88,14 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "orderDate", "type": "string (YYYY-MM-DD)", "required": True, "description": "Order date. Default to today."},
             {"name": "deliveryDate", "type": "string (YYYY-MM-DD)", "required": True, "description": "Delivery date. Default to order date."},
             {"name": "invoiceComment", "type": "string", "required": False, "description": "Comment to appear on invoice"},
+            {"name": "reference", "type": "string", "required": False, "description": "Order reference text"},
             {"name": "receiverEmail", "type": "string", "required": False, "description": "Email to send order to"},
             {"name": "orderLines", "type": "array of objects", "required": True, "description": "Line items", "items": [
                 {"name": "description", "type": "string", "description": "Line description (product name or service)"},
+                {"name": "productNumber", "type": "string", "description": "Product number/SKU if specified in the prompt"},
                 {"name": "count", "type": "number", "description": "Quantity"},
                 {"name": "unitPriceExcludingVatCurrency", "type": "number", "description": "Unit price excluding VAT"},
+                {"name": "vatRatePercent", "type": "number", "description": "VAT rate as percentage (e.g. 25, 15, 12, 0) if specified"},
             ]},
         ],
     },
@@ -100,19 +104,23 @@ TASK_SCHEMAS: dict[str, dict] = {
         "notes": (
             "Invoice creation is a 2-step process: create order, then invoice from order. "
             "Customer is resolved by the workflow. If the prompt says to create a customer, "
-            "include customer details in a 'customer' object."
+            "include customer details in a 'customer' object. "
+            "The workflow auto-registers a bank account if missing."
         ),
         "fields": [
             {"name": "customerName", "type": "string", "required": False, "description": "Customer name (looked up or created)"},
             {"name": "customerId", "type": "integer", "required": False, "description": "Customer ID if known"},
-            {"name": "customer", "type": "object {name, email, organizationNumber, ...}", "required": False, "description": "Full customer details if creating new customer"},
+            {"name": "customer", "type": "object {name, email, organizationNumber, phoneNumber, postalAddress, isSupplier, ...}", "required": False, "description": "Full customer details if creating new customer"},
             {"name": "invoiceDate", "type": "string (YYYY-MM-DD)", "required": True, "description": "Invoice date. Default to today."},
             {"name": "dueDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Due date for payment"},
             {"name": "invoiceComment", "type": "string", "required": False, "description": "Comment on the invoice"},
+            {"name": "sendToCustomer", "type": "boolean", "required": False, "description": "Whether to send the invoice to the customer"},
             {"name": "orderLines", "type": "array of objects", "required": True, "description": "Invoice line items", "items": [
                 {"name": "description", "type": "string", "description": "Line description (product/service name)"},
-                {"name": "count", "type": "number", "description": "Quantity"},
+                {"name": "productNumber", "type": "string", "description": "Product number/SKU if specified in the prompt"},
+                {"name": "count", "type": "number", "description": "Quantity (default 1)"},
                 {"name": "unitPriceExcludingVatCurrency", "type": "number", "description": "Unit price excluding VAT"},
+                {"name": "vatRatePercent", "type": "number", "description": "VAT rate as percentage (e.g. 25, 15, 12, 0) if specified"},
             ]},
         ],
     },
@@ -138,21 +146,31 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "invoiceNumber", "type": "integer", "required": False, "description": "Invoice number (if ID not known)"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": True, "description": "Credit note date. Default to today."},
             {"name": "comment", "type": "string", "required": False, "description": "Comment on the credit note"},
+            {"name": "sendToCustomer", "type": "boolean", "required": False, "description": "Whether to send credit note to customer"},
         ],
     },
     "create_travel_expense": {
         "api_endpoint": "POST /travelExpense + POST /travelExpense/cost per line",
         "notes": (
-            "Employee is auto-resolved if not specified. "
-            "Each cost line requires: date, amountCurrencyIncVat, paymentType (object ref — workflow handles lookup). "
-            "Use 'comments' (not 'description') for cost line text."
+            "If the prompt names an employee (with name/email), include their details so the workflow can create them. "
+            "Each cost line requires: date, amountCurrencyIncVat. Payment type is auto-resolved. "
+            "Use 'comments' (not 'description') for cost line text. "
+            "Per diem (dagpenger/Tagegeld/daily allowance) should be extracted separately from regular costs."
         ),
         "fields": [
             {"name": "title", "type": "string", "required": True, "description": "Travel expense title"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Travel date. Default to today."},
-            {"name": "employeeId", "type": "integer", "required": False, "description": "Employee ID (auto-resolved if omitted)"},
-            {"name": "costs", "type": "array of objects", "required": False, "description": "Cost/expense lines", "items": [
-                {"name": "comments", "type": "string", "description": "What the expense was for (e.g. 'Taxi', 'Togbillett')"},
+            {"name": "employeeFirstName", "type": "string", "required": False, "description": "Employee first name if specified in prompt"},
+            {"name": "employeeLastName", "type": "string", "required": False, "description": "Employee last name if specified in prompt"},
+            {"name": "employeeEmail", "type": "string", "required": False, "description": "Employee email if specified in prompt"},
+            {"name": "projectId", "type": "integer", "required": False, "description": "Project ID if expense is linked to a project"},
+            {"name": "departmentId", "type": "integer", "required": False, "description": "Department ID if specified"},
+            {"name": "perDiem", "type": "object", "required": False, "description": "Per diem / daily allowance if mentioned", "items": [
+                {"name": "days", "type": "number", "description": "Number of days"},
+                {"name": "dailyRate", "type": "number", "description": "Daily rate in NOK"},
+            ]},
+            {"name": "costs", "type": "array of objects", "required": False, "description": "Cost/expense lines (NOT per diem)", "items": [
+                {"name": "comments", "type": "string", "description": "What the expense was for (e.g. 'Taxi', 'Togbillett', 'Flugticket')"},
                 {"name": "amountCurrencyIncVat", "type": "number", "description": "Amount including VAT"},
                 {"name": "date", "type": "string (YYYY-MM-DD)", "description": "Date of this expense. Defaults to travel date."},
             ]},
@@ -170,11 +188,15 @@ TASK_SCHEMAS: dict[str, dict] = {
         "notes": "projectManager is required but auto-resolved by the workflow. Do not guess employee IDs.",
         "fields": [
             {"name": "name", "type": "string", "required": True, "description": "Project name"},
+            {"name": "number", "type": "string", "required": False, "description": "Project number (auto-generated if omitted)"},
             {"name": "description", "type": "string", "required": False, "description": "Project description"},
             {"name": "startDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Start date"},
             {"name": "endDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "End date"},
             {"name": "isInternal", "type": "boolean", "required": False, "description": "True if internal project"},
             {"name": "isFixedPrice", "type": "boolean", "required": False, "description": "True if fixed price, false if hourly"},
+            {"name": "customerId", "type": "integer", "required": False, "description": "Customer ID to link this project to"},
+            {"name": "departmentId", "type": "integer", "required": False, "description": "Department ID"},
+            {"name": "mainProjectId", "type": "integer", "required": False, "description": "Parent project ID if this is a sub-project"},
         ],
     },
 }
