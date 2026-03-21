@@ -73,7 +73,8 @@ async def _run_hybrid_mode(
 
     if not steps:
         logger.warning("Chief produced empty plan, falling back to Senior")
-        return await run_senior_accountant(prompt, files, client, deadline=deadline)
+        preamble = f"**Chief reasoning (plan failed):** {thinking}" if thinking else None
+        return await run_senior_accountant(prompt, files, client, deadline=deadline, plan_preamble=preamble)
 
     # Safety net: detect if Chief "gave up" instead of planning
     if len(steps) == 1 and steps[0].get("suggested_workflow") == "fallback":

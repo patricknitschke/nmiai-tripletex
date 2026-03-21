@@ -45,36 +45,11 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
 
     logger.info("Employee created/found with ID: %d", employee_id)
 
-    # Step 2: Create employment record
+    # Step 2: Build employment details (inline with employment to save a POST)
     start_date = data.get("startDate", today)
-    employment_payload = {
-        "employee": {"id": employee_id},
-        "startDate": start_date,
-        "isMainEmployer": True,
-        "taxDeductionCode": "loennFraHovedarbeidsgiver",
-    }
-    # Link employment to company division (required for salary transactions)
-    div_result = await client.get("/division", params={"count": "1"})
-    divisions = div_result.get("values", [])
-    if divisions:
-        employment_payload["division"] = {"id": divisions[0]["id"]}
-        logger.info("Linking employment to division: id=%d name=%s", divisions[0]["id"], divisions[0].get("name"))
-
-    logger.info("Creating employment for employee %d (startDate=%s)", employee_id, start_date)
-    employment_result = await client.post("/employee/employment", employment_payload)
-
-    employment_id = employment_result.get("value", {}).get("id")
-    if not employment_id:
-        logger.error("Failed to create employment: %s", employment_result)
-        return {"error": "Failed to create employment", "employee": employee_result, "details": employment_result}
-
-    logger.info("Employment created with ID: %d", employment_id)
-
-    # Step 3: Create employment details (STYRK, salary, percentage, type)
     errors = []
 
-    details_payload = {
-        "employment": {"id": employment_id},
+    details_obj = {
         "date": start_date,
         "employmentType": data.get("employmentType", "ORDINARY"),
         "employmentForm": data.get("employmentForm", "PERMANENT"),
@@ -88,29 +63,53 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
         oc_result = await client.get("/employee/employment/occupationCode", params={"code": str(occupation_code), "count": "1"})
         oc_values = oc_result.get("values", [])
         if oc_values:
-            details_payload["occupationCode"] = {"id": oc_values[0]["id"]}
+            details_obj["occupationCode"] = {"id": oc_values[0]["id"]}
             logger.info("Resolved STYRK %s → id=%d", occupation_code, oc_values[0]["id"])
         else:
             logger.warning("STYRK code %s not found in Tripletex, skipping", occupation_code)
 
     percentage = data.get("percentageOfFullTimeEquivalent") or data.get("percentage")
     if percentage is not None:
-        details_payload["percentageOfFullTimeEquivalent"] = percentage
+        details_obj["percentageOfFullTimeEquivalent"] = percentage
 
     annual_salary = data.get("annualSalary") or data.get("salary")
     if annual_salary is not None:
-        details_payload["annualSalary"] = annual_salary
+        details_obj["annualSalary"] = annual_salary
 
-    logger.info("Creating employment details: STYRK=%s, salary=%s, percentage=%s",
-                occupation_code, annual_salary, percentage)
-    details_result = await client.post("/employee/employment/details", details_payload)
+    # Step 3: Create employment with details inlined (single POST instead of two)
+    employment_payload = {
+        "employee": {"id": employee_id},
+        "startDate": start_date,
+        "isMainEmployer": True,
+        "taxDeductionCode": "loennFraHovedarbeidsgiver",
+        "employmentDetails": [details_obj],
+    }
+    # Link employment to company division (required for salary transactions)
+    div_result = await client.get("/division", params={"count": "1"})
+    divisions = div_result.get("values", [])
+    if divisions:
+        employment_payload["division"] = {"id": divisions[0]["id"]}
+        logger.info("Linking employment to division: id=%d name=%s", divisions[0]["id"], divisions[0].get("name"))
 
-    details_id = details_result.get("value", {}).get("id")
+    logger.info("Creating employment for employee %d (startDate=%s, STYRK=%s, salary=%s, percentage=%s)",
+                employee_id, start_date, occupation_code, annual_salary, percentage)
+    employment_result = await client.post("/employee/employment", employment_payload)
+
+    employment_id = employment_result.get("value", {}).get("id")
+    if not employment_id:
+        logger.error("Failed to create employment: %s", employment_result)
+        return {"error": "Failed to create employment", "employee": employee_result, "details": employment_result}
+
+    logger.info("Employment created with ID: %d", employment_id)
+
+    # Extract details ID from the inlined response
+    details_list = employment_result.get("value", {}).get("employmentDetails", [])
+    details_id = details_list[0]["id"] if details_list else None
     if details_id:
         logger.info("Employment details created with ID: %d", details_id)
     else:
-        logger.error("Failed to create employment details: %s", details_result)
-        errors.append(f"Employment details failed (STYRK/salary/percentage not set): {details_result}")
+        logger.warning("Employment details not returned inline, may need separate creation")
+        errors.append("Employment details not returned in employment response")
 
     # Step 4: Set standard working hours
     hours_id = None
@@ -140,9 +139,9 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
         }
     }
 
-    # Free GET: verify employment details were stored correctly
+    # Verify employment details only when we actually set values worth checking
     warnings = []
-    if details_id:
+    if details_id and (occupation_code or annual_salary is not None or percentage is not None):
         verify = await client.get(f"/employee/employment/details/{details_id}")
         actual = verify.get("value", {})
         if occupation_code:

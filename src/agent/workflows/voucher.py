@@ -320,9 +320,17 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
     # Second pass (B25v2): drop system-managed postings (2710, 2400).
     # If LLM sent manual postings to these, remove them and ensure the
     # expense line uses amountGross so Tripletex auto-generates the rest.
+    # B34 fix: ONLY drop system accounts when there is at least one expense
+    # account (4xxx-7xxx) in the mix — meaning Tripletex would auto-generate
+    # the VAT/supplier posting. If no expense account present (pure balance-sheet
+    # correction like 2710↔1920), keep everything as-is.
     system_indices = {i for i, (_, acn, _) in enumerate(resolved) if acn in _SYSTEM_ACCOUNTS}
+    has_expense_account = any(
+        acn and acn[0] in ("4", "5", "6", "7")
+        for _, acn, _ in resolved
+    )
 
-    if system_indices and len(resolved) > len(system_indices):
+    if system_indices and len(resolved) > len(system_indices) and has_expense_account:
         dropped = [resolved[i][1] for i in system_indices]
         logger.info("B25v2: Dropping system-managed postings: %s (Tripletex auto-generates these)", dropped)
         resolved = [(p, a, h) for j, (p, a, h) in enumerate(resolved) if j not in system_indices]
@@ -336,6 +344,9 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
         # Recalculate: the absolute total of the dropped lines tells us what's missing
         # But we can't reliably recalculate here — trust that amountGross is already correct
         # (the LLM or caller should provide the gross amount per posting)
+    elif system_indices and not has_expense_account:
+        logger.info("B34: Keeping system-account postings %s (pure correction — no expense account in mix)",
+                     [resolved[i][1] for i in system_indices])
 
     return [posting for posting, _, _ in resolved]
 

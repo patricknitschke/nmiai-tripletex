@@ -100,7 +100,7 @@ POST /solve (100s deadline)
 |---|---|---|---|---|
 | Credit notes (reversal) | T2 | `create_credit_note` | 1/5 | See Invoicing |
 | Delete entries | T2 | `delete_travel_expense` | — | Only travel deletion. No general delete workflow |
-| Ledger error correction | T3 | `analyze_ledger` + `create_voucher` | **needs test** | **P3 BUILT:** analyze_ledger fetches postings, detects imbalances/duplicates/orphaned VAT. Senior uses create_voucher to correct |
+| Ledger error correction | T3 | `analyze_ledger` + `create_voucher` | 3/4 | **B34+B35 FIXED:** analyze_ledger now returns account numbers (was null). create_voucher no longer drops 2710 for pure corrections. Senior prompt has VAT correction guidance (reverse + register_expense) |
 | Monthly/yearly closing | T3 | `create_voucher` | 1/6 | **P2 FIXED:** Chief bypassed for closing tasks (keyword detection). Senior handles directly — saves 30s+ |
 
 ### Departments (T1)
@@ -183,6 +183,8 @@ POST /solve (100s deadline)
 | B22 | Supplier invoice "systemgenererte" 422 | 1/6 on supplier invoices — account default VAT config conflicts with amountGross+vatType | ✅ FIXED — manual 3-posting split with `amount` (net) + explicit no-VAT type. Also hardened `_post_voucher` retries with no-VAT type |
 | B23 | Voucher systemgenererte on ALL accounts | Dimension voucher 3/6, supplier invoice 5/6 — no-VAT type id=5 is OUTPUT ("Ingen utgående avgift") but expense accounts need INPUT. All retries fail | ✅ FIXED — `_post_voucher` retry 1 now strips vatType entirely (lets Tripletex use account default). Also added `create_dimension` workflow to avoid API fumbling |
 | B24 | register_expense 2-posting structure triggers systemgenererte on ALL accounts | Receipt expense 0/0 — amountGross on expense accounts triggers auto-generated VAT postings → 422. Even _post_voucher retries fail because they just rename field without splitting VAT. | ✅ FIXED — Restructured to 3-posting like create_supplier_invoice: expense (net) + VAT 2710 + bank (gross credit), all with `amount` + explicit no-VAT type |
+| B34 | analyze_ledger returns account: null for all postings | Ledger correction 3/4 — LLM can't match errors to specific accounts, flies blind. API returns {id,url} not {number,name} for account references. | ✅ FIXED — Added `fields=*,account(*)` to GET /ledger/posting to expand account objects with number+name |
+| B35 | create_voucher drops 2710 postings for pure correction vouchers | Ledger correction — posting 2710↔1920 loses 2710 line → unbalanced → 422. _resolve_postings unconditionally drops all system accounts. | ✅ FIXED — Only drop system accounts (2710/2400) when expense account (4xxx-7xxx) is present. Pure balance-sheet corrections keep all postings. Senior prompt now guides VAT corrections through register_expense |
 | B25 | Manual 3-posting split WITH correct vatType STILL fails systemgenererte | create_supplier_invoice 0/0, create_voucher 0/0 — posting to 2710 (VAT account) IS the system-generated posting Tripletex auto-creates. Row 0 rejected. 2400 (supplier ledger) also system-managed. | ✅ FIXED B25v2 — Supplier invoice: 1 posting with `amountGross` + real `vatType` (25% input) + `supplier`. Tripletex auto-generates 2710+2400. Expense: 2 postings (expense amountGross+vatType, bank negative). `_resolve_postings` drops LLM-generated 2710/2400 postings. |
 | B26 | B25v2 single posting still fails: guiRow 0 reserved for system-generated | Correct payload (1 posting + amountGross + vatType + supplier) rejected with same "rad 0 systemgenererte" error | ✅ FIXED — Add `"row": 1` to all user-created postings. Row 0 is reserved for Tripletex's auto-generated counterpart lines (2400 credit, MVA). |
 
@@ -197,7 +199,7 @@ POST /solve (100s deadline)
 | 3 | **Resubmit bank reconciliation** | 3-6 pts (supplier payments) | Zero code changes | ⏳ RESUBMIT — P1 + B18 fix now in v27+ |
 | 4 | **Resubmit supplier invoices** | up to 6 pts (T3) | Zero code changes | ⏳ RESUBMIT — B18 voucherType fix in v27+ |
 | 5 | **Test monthly closing (P2)** | 6-10 pts (T3) | 1 submission | ⏳ RESUBMIT — Chief bypass + separate vouchers |
-| 6 | **Test ledger correction (P3)** | Up to 6 pts (T3) | 1 submission | ⏳ NEVER TESTED — analyze_ledger workflow built |
+| 6 | **Resubmit ledger correction (P3)** | Up to 6 pts (T3) | 1 submission | ⏳ TESTED 3/4 — B34+B35 fixes deployed. Account extraction + 2710 handling + VAT correction prompt. Expect 4/4 |
 | 7 | **Resubmit employee+startDate tasks** | 2-4 pts | Zero code changes | ⏳ RESUBMIT — B16 fix in v27+ |
 
 **All code fixes are deployed. The points are on the table — just need resubmissions.**

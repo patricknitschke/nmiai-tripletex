@@ -7,6 +7,7 @@ for specialist agents to execute in hybrid mode.
 
 import json
 import logging
+import re
 from datetime import date
 
 import os
@@ -19,6 +20,12 @@ from ..workflows.schemas import TASK_SCHEMAS
 CHIEF_MODEL = os.environ.get("CHIEF_MODEL", "gemini-2.5-flash")
 
 logger = logging.getLogger("agent.chief")
+
+
+def _extract_thinking(raw: str) -> str:
+    """Best-effort extract of the thinking field from truncated/broken JSON."""
+    m = re.search(r'"thinking"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+    return m.group(1) if m else ""
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +125,13 @@ async def chief_plan(prompt: str, files: list) -> tuple[str, list[dict]]:
     system = PLAN_PROMPT.format(today=today, workflow_catalog=catalog)
 
     content = build_content(prompt, files)
-    raw = await complete(system, content, max_tokens=2048, model=CHIEF_MODEL)
+    raw = await complete(system, content, max_tokens=4096, model=CHIEF_MODEL)
+
+    # Retry once if Chief returned empty (gemini sometimes returns blank)
+    if not raw or not raw.strip():
+        logger.warning("Chief returned empty response, retrying once...")
+        raw = await complete(system, content, max_tokens=4096, model=CHIEF_MODEL)
+
     logger.info("Chief plan raw: %s", raw)
 
     try:
@@ -130,5 +143,18 @@ async def chief_plan(prompt: str, files: list) -> tuple[str, list[dict]]:
         logger.info("Chief produced %d step(s)", len(steps))
         return thinking, steps
     except Exception:
-        logger.error("Failed to parse Chief plan, using single fallback step")
-        return "", [{"task": "Complete the accounting task described in the prompt", "suggested_workflow": "fallback"}]
+        # Retry once on parse failure (truncated JSON, etc.)
+        logger.warning("Failed to parse Chief plan, retrying once...")
+        raw = await complete(system, content, max_tokens=4096, model=CHIEF_MODEL)
+        logger.info("Chief plan retry raw: %s", raw)
+        try:
+            plan = parse_json(raw)
+            thinking = plan.get("thinking", "")
+            steps = plan.get("steps", [])
+            logger.info("Chief retry succeeded with %d step(s)", len(steps))
+            return thinking, steps
+        except Exception:
+            # Salvage thinking from truncated JSON if possible
+            thinking = _extract_thinking(raw)
+            logger.error("Failed to parse Chief plan after retry, returning empty steps (thinking=%s)", bool(thinking))
+            return thinking, []

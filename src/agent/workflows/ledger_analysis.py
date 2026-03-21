@@ -36,10 +36,12 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
     logger.info("Analyzing ledger postings from %s to %s", date_from, date_to)
 
     # Fetch all postings in the date range
+    # Request expanded account fields so we get number+name (not just id+url)
     params = {
         "dateFrom": date_from,
         "dateTo": date_to,
         "count": "10000",
+        "fields": "id,voucher,date,description,account(*),amountGross,amount,amountCurrency,amountGrossCurrency,systemGenerated",
     }
     if data.get("accountFrom"):
         params["accountNumberFrom"] = str(data["accountFrom"])

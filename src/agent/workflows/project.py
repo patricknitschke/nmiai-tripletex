@@ -41,8 +41,8 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
             update_payload["isInternal"] = data["isInternal"]
         if data.get("isFixedPrice") is not None and data["isFixedPrice"] != existing_project.get("isFixedPrice"):
             update_payload["isFixedPrice"] = data["isFixedPrice"]
-        # Check fixedprice amount (data may use either casing)
-        desired_fp = data.get("fixedprice") or data.get("fixedPrice")
+        # Check fixedprice amount (data may use various casing/aliases)
+        desired_fp = data.get("fixedprice") or data.get("fixedPrice") or data.get("fixedPriceAmount") or data.get("price") or data.get("budget")
         if desired_fp is not None and desired_fp != existing_project.get("fixedprice"):
             update_payload["fixedprice"] = desired_fp
             update_payload["isFixedPrice"] = True
@@ -139,8 +139,10 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
         payload["isInternal"] = data["isInternal"]
     if data.get("isFixedPrice") is not None:
         payload["isFixedPrice"] = data["isFixedPrice"]
-    if data.get("fixedprice") is not None or data.get("fixedPrice") is not None:
-        payload["fixedprice"] = data.get("fixedprice") or data.get("fixedPrice")
+    fp = data.get("fixedprice") or data.get("fixedPrice") or data.get("fixedPriceAmount") or data.get("price")
+    if fp is not None:
+        payload["fixedprice"] = fp
+        payload["isFixedPrice"] = True
     if data.get("budget") is not None:
         # budget often means fixed price in competition tasks
         if "fixedprice" not in payload:

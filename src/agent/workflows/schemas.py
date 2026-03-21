@@ -377,9 +377,12 @@ TASK_SCHEMAS: dict[str, dict] = {
         "api_endpoint": "GET /ledger/posting",
         "notes": (
             "Analyzes ledger postings for a date range and detects accounting errors: imbalanced vouchers, "
-            "duplicate postings, orphaned VAT entries. Returns structured error list with voucher summaries. "
+            "duplicate postings, orphaned VAT entries. Returns structured error list with account numbers and voucher summaries. "
             "Use this FIRST for ledger correction tasks, then use create_voucher to post corrective entries. "
-            "For error correction (retting/correction/Korrektur/correction/correção): analyze_ledger → create_voucher."
+            "For error correction (retting/correction/Korrektur/correction/correção): analyze_ledger → create_voucher. "
+            "IMPORTANT for missing-VAT corrections: do NOT post directly to account 2710 (system-managed). Instead: "
+            "(1) create_voucher to reverse the original no-VAT posting, then (2) register_expense with amountInclVat "
+            "(original amount × 1.25 for 25% VAT) — this auto-generates the 2710 VAT posting."
         ),
         "fields": [
             {"name": "dateFrom", "type": "string (YYYY-MM-DD)", "required": False, "description": "Start date for analysis (default: Jan 1 current year)"},

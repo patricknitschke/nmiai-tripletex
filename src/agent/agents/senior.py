@@ -100,6 +100,16 @@ Always use lookup_api first to get the correct endpoint schema.
   Just calculate the amounts and call create_voucher IMMEDIATELY. Post EACH journal entry as a SEPARATE \
   create_voucher call (not all in one). Example: accrual reversal = one voucher, depreciation = one voucher, \
   salary provision = one voucher. Depreciation formula: acquisition_cost / useful_life_years / 12.
+- **Ledger error correction (Hauptbuch/grand livre/livro razão):** Use analyze_ledger first, then fix each error: \
+  (1) Wrong account → create_voucher: debit correct account, credit wrong account (or vice versa). \
+  (2) Duplicate voucher → create_voucher: reverse the duplicate (negate both postings). \
+  (3) Missing VAT line (fehlende MwSt/MVA manquante) → TWO steps: first create_voucher to REVERSE the original \
+  no-VAT posting (credit the expense account, debit bank 1920), then register_expense with the FULL amount \
+  including VAT (amountInclVat = amount × 1.25 for 25% VAT) on the same expense account. This makes Tripletex \
+  auto-generate the 2710 VAT posting. Do NOT try to post directly to account 2710 — it is system-managed. \
+  (4) Wrong amount → create_voucher: reverse the difference (e.g. if 22550 was booked instead of 5150, \
+  reverse 22550-5150=17400 from the expense account back to bank 1920). \
+  Post EACH correction as a SEPARATE create_voucher call.
 - **Time registration dates:** Newly created projects have startDate=today. You CANNOT register hours before \
   the project start date. Use today's date for all time entries on new projects. If you need to register many \
   hours, put them all on today (or split across today and future dates). NEVER use past dates for new projects.
@@ -314,6 +324,6 @@ async def run_senior_accountant(
         user_content=content,
         tools=TOOLS,
         execute_tool=execute_tool,
-        max_iterations=15,
+        max_iterations=20,
         deadline=deadline,
     )
