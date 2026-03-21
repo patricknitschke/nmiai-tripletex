@@ -135,11 +135,34 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
 
 
 async def delete_travel_expense(data: dict, client: TripletexClient) -> dict:
-    """Delete a travel expense by ID."""
+    """Delete a travel expense by ID, or search by employee/title."""
     expense_id = data.get("travelExpenseId") or data.get("id")
+
     if not expense_id:
-        logger.error("No travel expense ID provided for deletion")
-        return {"error": "No travel expense ID"}
+        # Search by employee email or title
+        params = {"count": "100"}
+        if data.get("employeeEmail"):
+            # Find employee first
+            emp_result = await client.get("/employee", params={"email": data["employeeEmail"], "count": "1"})
+            employees = emp_result.get("values", [])
+            if employees:
+                params["employeeId"] = str(employees[0]["id"])
+
+        result = await client.get("/travelExpense", params=params)
+        expenses = result.get("values", [])
+        title = data.get("title", "").lower()
+        for exp in expenses:
+            if title and title in exp.get("title", "").lower():
+                expense_id = exp["id"]
+                logger.info("Found travel expense by title '%s' (id=%d)", title, expense_id)
+                break
+        if not expense_id and expenses:
+            expense_id = expenses[0]["id"]
+            logger.info("Using first travel expense (id=%d)", expense_id)
+
+    if not expense_id:
+        logger.error("No travel expense found for deletion: %s", data)
+        return {"error": "No travel expense found"}
 
     logger.info("Deleting travel expense %d", expense_id)
     result = await client.delete(f"/travelExpense/{expense_id}")

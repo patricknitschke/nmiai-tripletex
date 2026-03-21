@@ -9,19 +9,20 @@ logger = logging.getLogger("agent.workflows.project")
 async def create_project(data: dict, client: TripletexClient) -> dict:
     """Create a project in Tripletex."""
 
-    # projectManager is required — always look up a real employee
-    # (LLM can't know real IDs, so we ignore its guesses)
-    emp_result = await client.get("/employee", params={"count": "10"})
-    employees = emp_result.get("values", [])
-    manager_id = None
-    if employees:
-        # Prefer non-default employees (skip "Historisk ansatt" etc.)
-        for emp in employees:
-            if emp.get("userType") is not None:
-                manager_id = emp["id"]
-                break
-        if not manager_id:
-            manager_id = employees[-1]["id"]  # last resort: most recently created
+    # projectManager is required — use provided ID or look up
+    manager_id = data.get("projectManagerId")
+    if not manager_id:
+        emp_result = await client.get("/employee", params={"count": "10"})
+        employees = emp_result.get("values", [])
+        if employees:
+            # Prefer non-default employees (skip "Historisk ansatt" etc.)
+            for emp in employees:
+                if emp.get("userType") is not None:
+                    manager_id = emp["id"]
+                    break
+            if not manager_id:
+                manager_id = employees[-1]["id"]  # last resort: most recently created
+    if manager_id:
         logger.info("Using employee %d as project manager", manager_id)
 
     if not manager_id:
@@ -45,8 +46,22 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
     if data.get("isFixedPrice") is not None:
         payload["isFixedPrice"] = data["isFixedPrice"]
 
-    # Link to customer
+    # Link to customer — resolve by ID, org number, or name
     customer_id = data.get("customerId")
+    if not customer_id:
+        customer_name = data.get("customerName")
+        org_number = data.get("customerOrgNumber") or data.get("organizationNumber")
+        if customer_name or org_number:
+            params = {"count": "1"}
+            if org_number:
+                params["organizationNumber"] = org_number
+            elif customer_name:
+                params["name"] = customer_name
+            customers = await client.get("/customer", params=params)
+            customer_list = customers.get("values", [])
+            if customer_list:
+                customer_id = customer_list[0]["id"]
+                logger.info("Resolved customer '%s' → id=%d", customer_name or org_number, customer_id)
     if customer_id:
         payload["customer"] = {"id": customer_id}
 

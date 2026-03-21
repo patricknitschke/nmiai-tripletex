@@ -123,23 +123,38 @@ TASK_SCHEMAS: dict[str, dict] = {
     "register_payment": {
         "api_endpoint": "PUT /invoice/{id}/:payment (query params)",
         "notes": (
-            "All parameters are query params, not body. "
-            "paymentTypeId is required — the workflow looks it up via GET /invoice/paymentType. "
-            "The workflow resolves invoiceId from invoiceNumber if needed."
+            "SELF-CONTAINED: This workflow searches for the existing invoice by customer. "
+            "If no invoice is found, it creates one automatically. "
+            "For 'full payment' tasks, set fullPayment: true — the workflow will use the "
+            "invoice's actual total amount (including VAT). Do NOT calculate the amount yourself."
         ),
         "fields": [
-            {"name": "invoiceId", "type": "integer", "required": False, "description": "Invoice ID"},
-            {"name": "invoiceNumber", "type": "integer", "required": False, "description": "Invoice number (if ID not known)"},
-            {"name": "paymentDate", "type": "string (YYYY-MM-DD)", "required": True, "description": "Date of payment. Default to today."},
-            {"name": "paidAmount", "type": "number", "required": True, "description": "Amount paid"},
+            {"name": "invoiceId", "type": "integer", "required": False, "description": "Invoice ID (if known)"},
+            {"name": "invoiceNumber", "type": "integer", "required": False, "description": "Invoice number (if known)"},
+            {"name": "customerName", "type": "string", "required": False, "description": "Customer name — workflow searches for their existing invoice"},
+            {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Customer org number — workflow searches for their existing invoice"},
+            {"name": "fullPayment", "type": "boolean", "required": False, "description": "Set to true for 'full payment' — workflow uses invoice's actual total amount incl VAT"},
+            {"name": "paidAmount", "type": "number", "required": False, "description": "Specific amount to pay (only if NOT full payment)"},
+            {"name": "description", "type": "string", "required": False, "description": "Invoice line description — used if invoice must be created"},
+            {"name": "amountExclVat", "type": "number", "required": False, "description": "Invoice amount excl VAT — used if invoice must be created"},
+            {"name": "paymentDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Date of payment. Default to today."},
         ],
     },
     "create_credit_note": {
         "api_endpoint": "PUT /invoice/{id}/:createCreditNote (query params)",
-        "notes": "All parameters are query params. The workflow resolves invoiceId from invoiceNumber if needed.",
+        "notes": (
+            "SELF-CONTAINED: This workflow searches for the existing invoice by customer. "
+            "If no invoice is found, it creates one automatically. "
+            "You only need ONE step: call create_credit_note with customer info. "
+            "Do NOT create the invoice separately — the workflow handles everything."
+        ),
         "fields": [
-            {"name": "invoiceId", "type": "integer", "required": False, "description": "Invoice ID"},
-            {"name": "invoiceNumber", "type": "integer", "required": False, "description": "Invoice number (if ID not known)"},
+            {"name": "invoiceId", "type": "integer", "required": False, "description": "Invoice ID (if known)"},
+            {"name": "invoiceNumber", "type": "integer", "required": False, "description": "Invoice number (if known)"},
+            {"name": "customerName", "type": "string", "required": False, "description": "Customer name — workflow searches for their existing invoice"},
+            {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Customer org number — workflow searches for their existing invoice"},
+            {"name": "description", "type": "string", "required": False, "description": "Invoice line description (e.g. 'Webdesign') — used if invoice must be created"},
+            {"name": "amount", "type": "number", "required": False, "description": "Invoice amount excl VAT — used if invoice must be created"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": True, "description": "Credit note date. Default to today."},
             {"name": "comment", "type": "string", "required": False, "description": "Comment on the credit note"},
             {"name": "sendToCustomer", "type": "boolean", "required": False, "description": "Whether to send credit note to customer"},

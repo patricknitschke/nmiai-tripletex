@@ -93,7 +93,9 @@
       "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''projectInvoice''\\)[:600]\\)\")",
       "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; r = lookup\\(''project''\\); lines = [l for l in r.split\\(''\\\\n''\\) if ''invoice'' in l.lower\\(\\) or ''Invoice'' in l]; print\\(''\\\\n''.join\\(lines\\) if lines else ''none''\\)\")",
       "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; r = lookup\\(''invoice''\\); lines = [l for l in r.split\\(''\\\\n''\\) if ''project'' in l.lower\\(\\)]; print\\(''\\\\n''.join\\(lines\\) if lines else ''none''\\)\")",
-      "Bash(.venv/bin/python -c \"from src.agent.orchestrator import solve_task; print\\(''OK''\\)\")"
+      "Bash(.venv/bin/python -c \"from src.agent.orchestrator import solve_task; print\\(''OK''\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.workflows.credit_note import create_credit_note; print\\(''OK''\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.workflows.payment import register_payment; print\\(''OK''\\)\")"
     ]
   },
   "enabledMcpjsonServers": [

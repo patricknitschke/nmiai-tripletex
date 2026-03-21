@@ -32,6 +32,17 @@
   2. Added safety net in orchestrator: if Chief produces a single fallback step with "give up" language (missing, can't proceed, please provide), Senior ignores the plan and handles the task directly
 - **Date:** 2026-03-20, fixed 2026-03-21
 
+### B6: "Fresh empty environment" assumption is WRONG for some tasks (FIXED)
+- **Status:** FIXED
+- **Impact:** CRITICAL — credit note and payment tasks fail because we create duplicates instead of finding existing resources
+- **Symptom:** Credit note task scored 4/5 failed. Invoice `invoiceNumber: 2` (not 1) and bank account already existed. Task expected us to FIND the pre-existing invoice #1 and credit note it, but we created a duplicate #2.
+- **Root cause:** We assumed all competition accounts are completely empty. WRONG — some T2 tasks (credit notes, payments) pre-populate invoices/customers. Our agent creates duplicates instead of searching.
+- **Evidence:**
+  - Viento SL (ES): 4/5 failed — created invoice #2, credit noted it. Invoice #1 pre-existed.
+  - Brückentor GmbH (DE): 4/5 failed — same pattern. Bank account already set up, invoiceNumber=2.
+- **Fix:** Updated Chief and Senior prompts: "ALWAYS search before creating. Some tasks have pre-existing data." Agent now searches for existing invoices/customers before creating new ones.
+- **Date:** 2026-03-21
+
 ---
 
 ## Missing Workflows

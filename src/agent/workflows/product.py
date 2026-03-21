@@ -5,12 +5,16 @@ from ..tripletex import TripletexClient
 logger = logging.getLogger("agent.workflows.product")
 
 
-async def _lookup_vat_type(client: TripletexClient) -> int | None:
-    """Get the first standard VAT type ID (typically 25% MVA)."""
-    result = await client.get("/ledger/vatType", params={"count": "1"})
-    types = result.get("values", [])
-    if types:
-        return types[0]["id"]
+async def _lookup_vat_type_25(client: TripletexClient) -> int | None:
+    """Get the 25% output (Utgående) VAT type ID."""
+    result = await client.get("/ledger/vatType", params={"count": "100"})
+    for vt in result.get("values", []):
+        if vt.get("percentage") == 25 and "utgående" in vt.get("name", "").lower():
+            return vt["id"]
+    # Fallback: any 25% type
+    for vt in result.get("values", []):
+        if vt.get("percentage") == 25:
+            return vt["id"]
     return None
 
 
@@ -37,7 +41,7 @@ async def create_product(data: dict, client: TripletexClient) -> dict:
         payload["vatType"] = vat
     elif vat is not None:
         # LLM returned a string like "High" — lookup the VAT type
-        vat_id = await _lookup_vat_type(client)
+        vat_id = await _lookup_vat_type_25(client)
         if vat_id:
             payload["vatType"] = {"id": vat_id}
 

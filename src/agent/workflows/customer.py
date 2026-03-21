@@ -6,11 +6,28 @@ logger = logging.getLogger("agent.workflows.customer")
 
 
 async def create_customer(data: dict, client: TripletexClient) -> dict:
-    """Create a customer in Tripletex."""
+    """Create a customer in Tripletex. Searches by org number or name first to avoid duplicates."""
+
+    # Search for existing customer by org number or name
+    org_number = data.get("organizationNumber")
+    name = data.get("name", "")
+    if org_number:
+        search = await client.get("/customer", params={"organizationNumber": org_number, "count": "1"})
+        existing = search.get("values", [])
+        if existing:
+            logger.info("Customer already exists with org %s (id=%d)", org_number, existing[0]["id"])
+            return {"value": existing[0]}
+    elif name:
+        search = await client.get("/customer", params={"name": name, "count": "1"})
+        existing = search.get("values", [])
+        if existing:
+            logger.info("Customer already exists with name '%s' (id=%d)", name, existing[0]["id"])
+            return {"value": existing[0]}
+
     # If isSupplier is set but isCustomer isn't explicitly provided, default isCustomer to false
     default_is_customer = not data.get("isSupplier", False)
     payload = {
-        "name": data.get("name", ""),
+        "name": name,
         "isCustomer": data.get("isCustomer", default_is_customer),
     }
 

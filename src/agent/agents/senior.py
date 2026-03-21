@@ -53,10 +53,18 @@ The task prompt may be in Norwegian, English, Spanish, Portuguese, Nynorsk, Germ
 
 Today's date: {today}
 
-## CRITICAL: Fresh Empty Environment
-The Tripletex account starts COMPLETELY EMPTY — no customers, no products, no employees, \
-no bank accounts. Everything must be created from scratch. When the task says "register \
-payment on invoice", you need to CREATE the invoice first, then register payment.
+## CRITICAL: Environment Rules
+The Tripletex account may be EMPTY or may have PRE-EXISTING data depending on the task.
+
+**ALWAYS search before creating:** Before creating an invoice, customer, or other resource, \
+check if it already exists using tripletex_get. For example:
+- "Register payment on invoice" → FIRST search for the existing invoice (GET /invoice with customer name/number). \
+  Only create a new invoice if none is found.
+- "Issue credit note for invoice" → FIRST search for the existing invoice. Only create if not found.
+- "Create customer X" → The customer might already exist. The workflow handles search-before-create.
+
+**If resources don't exist, create them.** Many tasks require creating prerequisites from scratch \
+(customers, employees, products, bank accounts). Workflows handle this automatically.
 
 ## Your Workflows (PREFER these over raw API calls)
 {workflow_catalog}

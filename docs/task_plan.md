@@ -26,7 +26,7 @@ POST /solve (100s deadline)
 
 **Key design principles:**
 - Hybrid mode is default — Chief plans, specialists execute
-- Fresh empty environment is a first-class concept — prompts describe desired end state, not existing state
+- **Search before create** — some tasks have pre-existing data (invoices, customers). Agent always searches first, creates only if not found.
 - lookup_api tool gives agents self-serve access to OpenAPI spec
 - BETA endpoints flagged and blocked
 - 100s deadline with 20s buffer before 120s cloudflare timeout
@@ -34,10 +34,30 @@ POST /solve (100s deadline)
 - Safety net: bad Chief plans (e.g. "can't proceed") are detected and bypassed
 
 ## Current Phase
-Deploying v09/v10 with B1-B5 fixes. Hybrid mode now uses Senior-with-preamble (B4 fix). Dead code removed. Next: monitor scores, build T3 workflows (W1-W6).
+Phase 14: Workflow hardening — IN PROGRESS. Next: deploy + test, then 14c/14h/14i/14j, then Phase 15 (T3 workflows).
 
-**Bugs fixed this session:** B1 (Dockerfile), B3 (Chief fresh-env), B4 (specialist duplication → Senior-with-preamble), B5 (customer email fallback), isCustomer default for suppliers.
-**See** `docs/bugs_backlog.md` for full details + competition test results.
+**Session 2026-03-21 summary of ALL changes (not yet fully deployed):**
+
+Bugs fixed:
+- B1: Dockerfile — added OpenAPI spec to Docker image (.gitignore + .dockerignore fixed)
+- B3: Chief fresh-env — strengthened prompt + safety net for "give up" plans
+- B4: Specialist duplication — replaced specialist routing with Senior-with-preamble
+- B5: Customer email — invoiceEmail now copied to email field as fallback
+- B6: "Fresh empty" assumption wrong — some tasks have pre-existing data. Prompts updated to "search before create"
+- 9v: VAT default — order lines default to 25% Norwegian VAT when none specified
+
+Code changes:
+- Removed dead code: sub_agent.py deleted, chief_answer/chief_review removed, chief mode removed from orchestrator
+- credit_note.py: self-contained — searches existing invoice by customer, creates if not found
+- payment.py: self-contained — searches existing invoice, uses actual invoice amount (incl VAT) for full payment, fullPayment flag
+- customer.py: search-before-create by org number/name, isCustomer defaults to false for suppliers
+- project.py: resolves customer by name/org number, respects projectManagerId
+- product.py: VAT lookup uses 25% Utgående type (not just first result)
+- travel_expense.py: delete searches by employee email + title (schema not yet updated)
+- Senior + Chief prompts: VAT instructions, search-before-create, environment rules
+- Schemas updated: credit_note + payment now self-contained with customer fields + description/amount fallbacks
+
+**See** `docs/bugs_backlog.md` for full bug details + competition test results.
 
 ## Phases
 
@@ -152,7 +172,24 @@ src/agent/agents/specialists/
   ap.py                     # Supplier invoices, vouchers (placeholder)
 ```
 
-### Phase 13: Missing Workflows (T2/T3)
+### Phase 14: Workflow Hardening — IN PROGRESS
+Make workflows self-contained so they don't depend on Chief planning correctly.
+
+**Critical (costing points NOW):**
+- [x] **14a: Self-contained credit_note** — searches for existing invoice by customer, creates if not found
+- [x] **14b: Self-contained register_payment** — searches for existing invoice, uses actual invoice amount (incl VAT) for full payment
+- [ ] **14c: Fix delete_travel_expense schema** — add title + employeeEmail fields (workflow already updated)
+- [x] **14d: Customer search-before-create** — standalone create_customer now checks for duplicates
+- [x] **14e: Project customer resolution** — resolves customerName/orgNumber → ID
+- [x] **14f: Product VAT fix** — uses 25% Utgående type, not just first result
+- [x] **14g: 9v VAT default** — order lines default to 25% when no VAT specified
+
+**Medium:**
+- [ ] **14h: Trim workflow results** — return key fields only (id, amount, customer.id) to reduce context flooding
+- [ ] **14i: Fix _ensure_customer in invoice.py** — search by org number before creating (currently only searches by name)
+- [ ] **14j: Update create_project schema** — add customerName/customerOrgNumber fields
+
+### Phase 15: Missing Workflows (T2/T3)
 Priority order based on competition logs:
 - [ ] **W3: Time registration** — POST /timesheet/entry (seen in PT prompts, agent spiraled 9 iterations)
 - [ ] **W4: Project invoice** — from registered hours (always paired with W3)
@@ -174,7 +211,7 @@ Priority order based on competition logs:
 | **100s deadline** | Cloudflare kills at 120s. 20s buffer ensures we always return "completed". |
 | **Search-before-create pattern** | Competition accounts may have pre-existing resources. Employee workflow searches by email first. |
 | **No BETA endpoints** | Competition blocks BETA endpoints with 403. All workflows audited, entitlement endpoint removed. |
-| **Fresh empty environment as first-class concept** | All prompts know account starts empty. "Not found" = "create it". |
+| **Search before create** | Some tasks pre-populate data (invoices for credit notes, customers for payments). Agent searches first, creates only if not found. Old "fresh empty" assumption was wrong for T2 tasks. |
 | **Hybrid mode** | Chief plans (1 LLM call) → specialists execute each step. Combines strategic planning with domain expertise. No ask_chief overhead. |
 | **Specialist agents** | 6 domain specialists with focused system prompts. 16 workflow routes. Shared tools via base.py. AP and Corrections are placeholders pending workflows. |
 
