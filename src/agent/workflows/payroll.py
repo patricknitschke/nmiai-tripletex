@@ -92,6 +92,17 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
         }
         if annual_salary:
             details_payload["annualSalary"] = annual_salary
+
+        # Resolve STYRK occupation code (required for a-melding)
+        occupation_code = data.get("occupationCode") or data.get("styrkCode") or "2411"
+        oc_result = await client.get("/employee/employment/occupationCode", params={"code": str(occupation_code), "count": "1"})
+        oc_values = oc_result.get("values", [])
+        if oc_values:
+            details_payload["occupationCode"] = {"id": oc_values[0]["id"]}
+            logger.info("Resolved STYRK %s → id=%d", occupation_code, oc_values[0]["id"])
+        else:
+            logger.warning("STYRK code %s not found, employment details may fail", occupation_code)
+
         details_result = await client.post("/employee/employment/details", details_payload)
         if not details_result.get("value", {}).get("id"):
             logger.warning("Employment details creation may have failed: %s", details_result)

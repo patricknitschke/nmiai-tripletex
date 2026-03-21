@@ -103,15 +103,15 @@ async def _resolve_vat_type(client: TripletexClient, rate: float, direction: str
 
 
 async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
-    """Register a supplier invoice as a voucher with a single posting.
+    """Register a supplier invoice as a balanced 2-posting voucher.
 
-    B25v2 fix: Send ONE posting line with amountGross + vatType + supplier.
-    Tripletex auto-generates:
-    - Net amount on the expense account (e.g. 7300)
-    - VAT posting on 2710 (input VAT)
-    - Supplier debt posting on 2400
+    B36 fix: Two postings (same pattern as register_expense):
+    1. Debit: expense account (e.g. 7300) with amountGross + vatType (input)
+       - Tripletex auto-generates VAT posting on 2710
+    2. Credit: AP account 2400 (Leverandørgjeld) with -amountGross + supplier ref
 
-    Do NOT manually post to 2710 or 2400 — that causes "systemgenererte" 422.
+    Do NOT manually post to 2710 — Tripletex creates it from vatType.
+    DO manually post to 2400 — Tripletex does NOT auto-generate the AP entry.
 
     Input data fields:
     - supplierName, supplierOrgNumber: supplier identification
@@ -163,12 +163,25 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
         else:
             logger.warning("Expense account %s not found", expense_account)
 
+    # Resolve AP account 2400 (Leverandørgjeld / Accounts Payable)
+    ap_account_id = None
+    result = await client.get("/ledger/account", params={"number": "2400", "count": "1"})
+    accounts = result.get("values", [])
+    if accounts:
+        ap_account_id = accounts[0]["id"]
+        logger.info("Resolved AP account 2400 -> id=%d", ap_account_id)
+    else:
+        logger.warning("AP account 2400 not found")
+
     # Resolve the REAL input VAT type (e.g. 25% inngående) — NOT the 0% no-VAT type!
     # This tells Tripletex how to split gross into net + VAT.
     vat_type_id = await _resolve_vat_type(client, vat_rate, "input")
 
-    # B25v2: Single posting — Tripletex auto-generates 2710 (VAT) + 2400 (supplier debt)
-    # row>=1 because row 0 is reserved for system-generated postings
+    # B36: Two postings — expense debit + AP credit (same pattern as register_expense)
+    # Tripletex auto-generates the VAT posting on 2710 from vatType.
+    postings = []
+
+    # Row 1: Debit expense account with gross amount + VAT type
     expense_posting = {
         "date": voucher_date,
         "description": description,
@@ -179,24 +192,36 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
         expense_posting["account"] = {"id": expense_account_id}
     if vat_type_id:
         expense_posting["vatType"] = {"id": vat_type_id}
-    if supplier_id:
-        expense_posting["supplier"] = {"id": supplier_id}
+    postings.append(expense_posting)
 
-    logger.info("B25v2: Single posting — account=%s, amountGross=%.2f, vatType=%s, supplier=%s",
-                expense_account, amount_incl, vat_type_id, supplier_id)
+    # Row 2: Credit AP account 2400 with negative gross + supplier ref
+    ap_posting = {
+        "date": voucher_date,
+        "description": description,
+        "amountGross": -amount_incl,
+        "row": 2,
+    }
+    if ap_account_id:
+        ap_posting["account"] = {"id": ap_account_id}
+    if supplier_id:
+        ap_posting["supplier"] = {"id": supplier_id}
+    postings.append(ap_posting)
+
+    logger.info("B36: 2-posting structure — expense=%s (%.2f), AP=2400 (%.2f), vatType=%s, supplier=%s",
+                expense_account, amount_incl, -amount_incl, vat_type_id, supplier_id)
 
     # Build voucher
     voucher = {
         "date": voucher_date,
         "description": f"{description} - {invoice_number}" if invoice_number else description,
-        "postings": [expense_posting],
+        "postings": postings,
     }
     if voucher_type:
         voucher["voucherType"] = voucher_type
     if invoice_number:
         voucher["externalVoucherNumber"] = invoice_number
 
-    logger.info("Creating supplier invoice voucher with 1 posting")
+    logger.info("Creating supplier invoice voucher with %d postings", len(postings))
     return await _post_voucher(voucher, client)
 
 
@@ -307,6 +332,14 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
         elif no_vat_type_id and not account_has_default_vat:
             posting["vatType"] = {"id": no_vat_type_id}
 
+        # Customer / supplier references (required for AR / AP accounts)
+        customer_id = p.get("customerId")
+        if customer_id:
+            posting["customer"] = {"id": customer_id}
+        supplier_id = p.get("supplierId")
+        if supplier_id:
+            posting["supplier"] = {"id": supplier_id}
+
         # Accounting dimension support
         dim_id = p.get("dimensionId")
         if dim_id:
@@ -330,6 +363,10 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
         for _, acn, _ in resolved
     )
 
+    # NOTE: edge case — a mixed voucher with BOTH an expense line (6xxx) AND an intentional
+    # manual 2710 correction would have the 2710 dropped. In practice the Senior prompt says
+    # "post each correction as a separate voucher" so this shouldn't happen. If it does,
+    # we'd need to distinguish LLM-intended vs Tripletex-auto-generated 27xx postings.
     if system_indices and len(resolved) > len(system_indices) and has_expense_account:
         dropped = [resolved[i][1] for i in system_indices]
         logger.info("B25v2: Dropping system-managed postings: %s (Tripletex auto-generates these)", dropped)

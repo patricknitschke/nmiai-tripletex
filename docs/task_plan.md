@@ -78,7 +78,7 @@ POST /solve (100s deadline)
 | Invoice + payment | T2 | `create_invoice` + `register_payment` | 2/2 | ID passing between steps sometimes breaks |
 | Register payment | T2 | `register_payment` | 2/2 | B6 fixed — searches for pre-existing invoice |
 | Credit notes | T2 | `create_credit_note` | 1/5 | VAT interpretation + search-before-create both improved but **never retested** |
-| Supplier invoices | T3 | `create_supplier_invoice` | 1/6 | **B22 FIXED:** Manual 3-posting split with `amount` + no-VAT type. Previous approach used amountGross+vatType which conflicted with account default VAT config |
+| Supplier invoices | T3 | `create_supplier_invoice` | 5/6 | **B36 FIXED:** Was 1-posting (unbalanced). Now 2-posting: expense debit with vatType + AP 2400 credit with supplier ref. Same proven pattern as register_expense |
 | Project invoices | T2-T3 | `create_project_invoice` | 0 | **NEW v34**: Fixed-price % invoicing + time-based invoicing from timesheet hours. Needs competition test |
 | Reminder invoices | T2 | Fallback | 4/6 | Account 1500 is system-managed, voucher posting fails |
 
@@ -187,6 +187,7 @@ POST /solve (100s deadline)
 | B35 | create_voucher drops 2710 postings for pure correction vouchers | Ledger correction — posting 2710↔1920 loses 2710 line → unbalanced → 422. _resolve_postings unconditionally drops all system accounts. | ✅ FIXED — Only drop system accounts (2710/2400) when expense account (4xxx-7xxx) is present. Pure balance-sheet corrections keep all postings. Senior prompt now guides VAT corrections through register_expense |
 | B25 | Manual 3-posting split WITH correct vatType STILL fails systemgenererte | create_supplier_invoice 0/0, create_voucher 0/0 — posting to 2710 (VAT account) IS the system-generated posting Tripletex auto-creates. Row 0 rejected. 2400 (supplier ledger) also system-managed. | ✅ FIXED B25v2 — Supplier invoice: 1 posting with `amountGross` + real `vatType` (25% input) + `supplier`. Tripletex auto-generates 2710+2400. Expense: 2 postings (expense amountGross+vatType, bank negative). `_resolve_postings` drops LLM-generated 2710/2400 postings. |
 | B26 | B25v2 single posting still fails: guiRow 0 reserved for system-generated | Correct payload (1 posting + amountGross + vatType + supplier) rejected with same "rad 0 systemgenererte" error | ✅ FIXED — Add `"row": 1` to all user-created postings. Row 0 is reserved for Tripletex's auto-generated counterpart lines (2400 credit, MVA). |
+| B36 | create_supplier_invoice unbalanced (1 posting) + fx_payment missing customer on AR + wrong amount field | Supplier invoice 422 "sum not zero" — only sends expense debit, no AP credit. FX payment uses `amount` instead of `amountGross` + missing `customer.id` on 1500 posting. | ✅ FIXED — (1) create_supplier_invoice now 2-posting: expense debit with vatType + AP 2400 credit with supplier ref (same pattern as register_expense). (2) fx_payment uses `amountGross` + attaches customer from invoice to 1500 posting. (3) `_resolve_postings` propagates customerId/supplierId from posting data to resolved postings. |
 
 ## Day 3 Evening — Priority Action Queue (March 21)
 

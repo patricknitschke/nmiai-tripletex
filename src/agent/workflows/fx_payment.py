@@ -69,7 +69,8 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
         return {"error": f"Could not find invoice for {data.get('customerName', 'unknown customer')}"}
 
     invoice_id = invoice["id"]
-    logger.info("Found invoice %d for FX payment", invoice_id)
+    customer_id = (invoice.get("customer") or {}).get("id")
+    logger.info("Found invoice %d for FX payment (customer=%s)", invoice_id, customer_id)
 
     # Step 2: Register payment at the actual NOK amount received
     payment_type_id = data.get("paymentTypeId") or await _find_payment_type_id(client)
@@ -110,8 +111,8 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
         # Loss (disagio): debit 8060 (expense), credit 1500 (AR)
         label = f"Disagio {currency} {description}".strip()
         postings = [
-            {"account": 8060, "amount": exchange_diff, "description": label},
-            {"account": 1500, "amount": -exchange_diff, "description": label},
+            {"account": 8060, "amountGross": exchange_diff, "description": label},
+            {"account": 1500, "amountGross": -exchange_diff, "description": label, "customerId": customer_id},
         ]
         logger.info("Posting disagio (loss): %.2f NOK to 8060", exchange_diff)
     else:
@@ -119,8 +120,8 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
         gain = abs(exchange_diff)
         label = f"Agio {currency} {description}".strip()
         postings = [
-            {"account": 1500, "amount": gain, "description": label},
-            {"account": 8060, "amount": -gain, "description": label},
+            {"account": 1500, "amountGross": gain, "description": label, "customerId": customer_id},
+            {"account": 8060, "amountGross": -gain, "description": label},
         ]
         logger.info("Posting agio (gain): %.2f NOK to 8060", gain)
 
