@@ -1,5 +1,5 @@
 import logging
-from datetime import date as _date
+from datetime import date as _date, timedelta
 
 from ..tripletex import TripletexClient
 from .employee import create_employee
@@ -97,7 +97,21 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
     if data.get("isChargeable") is not None:
         payload["isChargeable"] = data["isChargeable"]
 
-    logger.info("Creating travel expense: '%s' for employee %d", payload["title"], employee_id)
+    # Build travelDetails with departure/return dates (required for per diem)
+    per_diem = data.get("perDiem")
+    travel_date = data.get("date") or _date.today().isoformat()
+    departure_date = data.get("departureDate") or travel_date
+    days = per_diem.get("days", 1) if per_diem else 1
+    return_date = data.get("returnDate") or (_date.fromisoformat(departure_date) + timedelta(days=max(days - 1, 0))).isoformat()
+
+    payload["travelDetails"] = {
+        "departureDate": departure_date,
+        "returnDate": return_date,
+        "departureTime": data.get("departureTime", "08:00"),
+        "returnTime": data.get("returnTime", "18:00"),
+    }
+
+    logger.info("Creating travel expense: '%s' for employee %d (departure=%s return=%s)", payload["title"], employee_id, departure_date, return_date)
     result = await client.post("/travelExpense", payload)
 
     expense_id = result.get("value", {}).get("id")
@@ -118,7 +132,6 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
 
     # Step 4: Add per diem as proper perDiemCompensation (not a cost line)
     if per_diem:
-        days = per_diem.get("days", 1)
         daily_rate = per_diem.get("dailyRate", 0)
         total = days * daily_rate
 
@@ -139,7 +152,8 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
 
         logger.info("Adding per diem compensation to expense %d: %d days × %s = %s", expense_id, days, daily_rate, total)
         pd_result = await client.post("/travelExpense/perDiemCompensation", per_diem_payload)
-        if not pd_result.get("value", {}).get("id"):
+        pd_value = pd_result.get("value", {})
+        if not (pd_value.get("id") or pd_value.get("url")):
             errors.append(f"Per diem compensation failed: {pd_result}")
             logger.error("Failed to add per diem to expense %d: %s", expense_id, pd_result)
 
@@ -151,7 +165,6 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
             "travelExpense": {"id": expense_id},
             "date": cost_date,
             "amountCurrencyIncVat": cost.get("amountCurrencyIncVat", cost.get("amount", 0)),
-            "isPaidByEmployee": cost.get("isPaidByEmployee", True),
         }
 
         if payment_type_id:
@@ -168,7 +181,8 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
 
         logger.info("Adding cost line to expense %d: %s", expense_id, desc)
         cl_result = await client.post("/travelExpense/cost", cost_payload)
-        if not cl_result.get("value", {}).get("id"):
+        cl_value = cl_result.get("value", {})
+        if not (cl_value.get("id") or cl_value.get("url")):
             errors.append(f"Cost line '{desc}' failed: {cl_result}")
             logger.error("Failed to add cost line to expense %d: %s", expense_id, cl_result)
 

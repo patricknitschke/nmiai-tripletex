@@ -88,7 +88,7 @@ POST /solve (100s deadline)
 ### Travel Expenses (T2)
 | Task | Tier | Workflow | Best Score | Weakness |
 |---|---|---|---|---|
-| Create travel expense | T2 | `create_travel_expense` | 4/6 | **B21 FIXED:** Per diem was added as cost line, now uses `/travelExpense/perDiemCompensation` endpoint with rateType+rateCategory |
+| Create travel expense | T2 | `create_travel_expense` | 4/6 | **B21 FIXED:** Per diem was added as cost line, now uses `/travelExpense/perDiemCompensation` endpoint with rateType+rateCategory. **B43 FIXED:** (1) travelDetails with departure/return dates now set on POST /travelExpense (required before per diem). (2) Cost line success detection fixed — checks value.url OR value.id (API returns url not id on 201). (3) Removed read-only isPaidByEmployee from cost payload |
 | Delete travel expense | T2 | `delete_travel_expense` | — | Built, never seen in competition |
 | Receipt expenses | T3 | `register_expense` | 0/5 | **B37 FIXED:** (1) `search_pdf` tool for targeted PDF extraction via Flash (no raw PDF in Senior context). (2) Norwegian VAT rate table in prompt (12% transport, 15% food, 25% general). (3) Multi-item split: call register_expense per line item. Needs retest |
 

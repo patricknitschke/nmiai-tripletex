@@ -180,6 +180,8 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "employeeEmail", "type": "string", "required": False, "description": "Employee email if specified in prompt"},
             {"name": "projectId", "type": "integer", "required": False, "description": "Project ID if expense is linked to a project"},
             {"name": "departmentId", "type": "integer", "required": False, "description": "Department ID if specified"},
+            {"name": "departureDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Departure date. Defaults to travel date."},
+            {"name": "returnDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Return date. Auto-calculated from departureDate + perDiem days if omitted."},
             {"name": "perDiem", "type": "object", "required": False, "description": "Per diem / daily allowance if mentioned", "items": [
                 {"name": "days", "type": "number", "description": "Number of days"},
                 {"name": "dailyRate", "type": "number", "description": "Daily rate in NOK"},
