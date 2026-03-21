@@ -88,11 +88,30 @@ async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
             return invoices[0]
 
     # Fetch all non-credit-note invoices for ranked matching
-    all_inv = await client.get("/invoice", params={
+    search_params = {
         "invoiceDateFrom": "2000-01-01",
         "invoiceDateTo": "2099-12-31",
         "count": "1000",
-    })
+    }
+    # Filter by customer if we can resolve one — avoids false matches
+    customer_id = data.get("customerId")
+    if not customer_id:
+        org_number = data.get("customerOrgNumber") or data.get("organizationNumber")
+        if org_number:
+            cust_result = await client.get("/customer", params={"organizationNumber": org_number, "count": "1"})
+            custs = cust_result.get("values", [])
+            if custs:
+                customer_id = custs[0]["id"]
+        if not customer_id and data.get("customerName"):
+            cust_result = await client.get("/customer", params={"name": data["customerName"], "count": "5"})
+            for c in cust_result.get("values", []):
+                if _normalize(c.get("name", "")) == _normalize(data["customerName"]):
+                    customer_id = c["id"]
+                    break
+    if customer_id:
+        search_params["customerId"] = str(customer_id)
+        data["_resolved_customerId"] = customer_id
+    all_inv = await client.get("/invoice", search_params)
     candidates = [
         inv for inv in all_inv.get("values", [])
         if not inv.get("isCreditNote") and not inv.get("isCredited")

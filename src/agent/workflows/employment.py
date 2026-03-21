@@ -84,7 +84,14 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
 
     occupation_code = data.get("occupationCode") or data.get("styrkCode")
     if occupation_code:
-        details_payload["occupationCode"] = {"code": str(occupation_code)}
+        # STYRK code must be resolved to its Tripletex internal ID
+        oc_result = await client.get("/employee/employment/occupationCode", params={"code": str(occupation_code), "count": "1"})
+        oc_values = oc_result.get("values", [])
+        if oc_values:
+            details_payload["occupationCode"] = {"id": oc_values[0]["id"]}
+            logger.info("Resolved STYRK %s → id=%d", occupation_code, oc_values[0]["id"])
+        else:
+            logger.warning("STYRK code %s not found in Tripletex, skipping", occupation_code)
 
     percentage = data.get("percentageOfFullTimeEquivalent") or data.get("percentage")
     if percentage is not None:

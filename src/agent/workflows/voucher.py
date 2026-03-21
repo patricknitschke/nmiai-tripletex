@@ -327,6 +327,10 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
         logger.info("B25v2: Dropping system-managed postings: %s (Tripletex auto-generates these)", dropped)
         resolved = [(p, a, h) for j, (p, a, h) in enumerate(resolved) if j not in system_indices]
 
+        # Renumber rows after dropping system postings (rows must be sequential from 1)
+        for idx, (p, _, _) in enumerate(resolved):
+            p["row"] = idx + 1
+
         # Ensure remaining expense lines have amountGross set to the original
         # gross amount (LLM may have sent net amounts with separate VAT line)
         # Recalculate: the absolute total of the dropped lines tells us what's missing
@@ -344,6 +348,11 @@ async def _post_voucher(voucher: dict, client: TripletexClient) -> dict:
     wants to auto-generate.  We merge any 27xx VAT postings into their
     companion posting's amountGross and retry.
     """
+    # Ensure amountGrossCurrency matches amountGross (required by Tripletex for NOK)
+    for p in voucher.get("postings", []):
+        if "amountGross" in p and "amountGrossCurrency" not in p:
+            p["amountGrossCurrency"] = p["amountGross"]
+
     result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
 
     voucher_id = result.get("value", {}).get("id")
@@ -370,6 +379,8 @@ async def _post_voucher(voucher: dict, client: TripletexClient) -> dict:
         p.pop("vatType", None)
         if "amount" in p and "amountGross" not in p:
             p["amountGross"] = p.pop("amount")
+        if "amountGross" in p and "amountGrossCurrency" not in p:
+            p["amountGrossCurrency"] = p["amountGross"]
 
     result = await client.post("/ledger/voucher", voucher_clean, params={"sendToLedger": "true"})
     voucher_id = result.get("value", {}).get("id")
