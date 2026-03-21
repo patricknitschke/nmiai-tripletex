@@ -8,17 +8,18 @@ from .invoice import create_invoice, create_order
 from .payment import register_payment
 from .credit_note import create_credit_note
 from .travel_expense import create_travel_expense, delete_travel_expense
-from .project import create_project
+from .project import create_project, create_projects_batch
 from .voucher import create_supplier_invoice, create_voucher
 from .dimension import create_dimension, create_dimension_voucher
 from .timesheet import register_time
 from .employment import register_employment
 from .bank_reconciliation import reconcile_bank_statement
 from .expense import register_expense
-from .ledger_analysis import analyze_ledger
+from .ledger_analysis import analyze_ledger, compare_expenses
 from .payroll import register_payroll
 from .fx_payment import register_fx_payment
 from .project_invoice import create_project_invoice
+from .overdue import find_overdue_invoices
 
 # Map task_type → workflow function
 # Each workflow takes (data: dict, client: TripletexClient) and returns a result dict
@@ -36,6 +37,7 @@ WORKFLOWS: dict[str, callable] = {
     "create_travel_expense": create_travel_expense,
     "delete_travel_expense": delete_travel_expense,
     "create_project": create_project,
+    "create_projects_batch": create_projects_batch,
     # Tier 3
     "create_supplier_invoice": create_supplier_invoice,
     "create_voucher": create_voucher,
@@ -46,7 +48,9 @@ WORKFLOWS: dict[str, callable] = {
     "register_expense": register_expense,
     "register_payroll": register_payroll,
     "analyze_ledger": analyze_ledger,
+    "compare_expenses": compare_expenses,
     "register_fx_payment": register_fx_payment,
     "create_project_invoice": create_project_invoice,
     "create_dimension_voucher": create_dimension_voucher,
+    "find_overdue_invoices": find_overdue_invoices,
 }

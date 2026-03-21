@@ -190,26 +190,156 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
     if data.get("mainProjectId"):
         payload["mainProject"] = {"id": data["mainProjectId"]}
 
+    # Embed project activities in the creation payload (saves a separate POST)
+    # Handle activityName / defaultActivityName shorthand from LLM
+    activity_name = data.get("activityName") or data.get("defaultActivityName")
+    if activity_name and not data.get("projectActivities") and not data.get("activities"):
+        data["projectActivities"] = [activity_name]
+    activities = data.get("projectActivities") or data.get("activities")
+    if activities:
+        pa_list = []
+        for act in activities:
+            if isinstance(act, str):
+                pa_list.append({"activity": {"name": act, "activityType": "PROJECT_SPECIFIC_ACTIVITY"}})
+            elif isinstance(act, dict):
+                pa_list.append(act if "activity" in act else {"activity": {**act, "activityType": act.get("activityType", "PROJECT_SPECIFIC_ACTIVITY")}})
+        if pa_list:
+            payload["projectActivities"] = pa_list
+
     logger.info("Creating project: %s", payload.get("name"))
     result = await client.post("/project", payload)
 
     project_id = result.get("value", {}).get("id")
     if project_id:
-        logger.info("Project created with ID: %d", project_id)
-
-        # Free GET: verify project manager was set correctly
-        verify = await client.get(f"/project/{project_id}", params={"fields": "id,name,projectManager(*)"})
-        actual = verify.get("value", {})
-        actual_pm = actual.get("projectManager", {})
-        actual_pm_id = actual_pm.get("id") if isinstance(actual_pm, dict) else actual_pm
-        if actual_pm_id != manager_id:
-            result.setdefault("warnings", []).append(
-                f"projectManager: sent id={manager_id}, stored id={actual_pm_id}"
-            )
-            logger.warning("Project %d PM mismatch: expected %d, got %s", project_id, manager_id, actual_pm_id)
-        else:
-            logger.info("Project %d verified: PM=%d OK", project_id, manager_id)
+        logger.info("Project created with ID: %d (PM=%d)", project_id, manager_id)
     else:
         logger.error("Failed to create project: %s", result)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Helper: resolve PM once (shared by single + batch)
+# ---------------------------------------------------------------------------
+
+async def _resolve_project_manager(data: dict, client: TripletexClient) -> int | None:
+    """Resolve project manager ID from email/name/ID. Returns ID or None."""
+    manager_id = data.get("projectManagerId")
+    if manager_id:
+        return manager_id
+
+    pm_email = data.get("projectManagerEmail")
+    if pm_email:
+        emp_result = await client.get("/employee", params={"email": pm_email, "count": "1"})
+        employees = emp_result.get("values", [])
+        if employees:
+            return employees[0]["id"]
+
+    pm_first = data.get("projectManagerFirstName")
+    pm_last = data.get("projectManagerLastName")
+    pm_name = data.get("projectManagerName")
+    if not pm_first and pm_name and " " in pm_name.strip():
+        parts = pm_name.strip().split()
+        pm_first = parts[0]
+        pm_last = " ".join(parts[1:])
+    if pm_first and pm_last:
+        emp_result = await client.get("/employee", params={"firstName": pm_first, "lastName": pm_last, "count": "10"})
+        for emp in emp_result.get("values", []):
+            if emp.get("firstName", "").lower() == pm_first.lower() and emp.get("lastName", "").lower() == pm_last.lower():
+                return emp["id"]
+
+    # Fallback: first existing employee
+    emp_result = await client.get("/employee", params={"count": "1"})
+    employees = emp_result.get("values", [])
+    if employees:
+        logger.warning("PM fallback: using employee %d", employees[0]["id"])
+        return employees[0]["id"]
+
+    return None
+
+
+def _build_activity_list(data: dict) -> list[dict] | None:
+    """Build projectActivities array from various input formats."""
+    activity_name = data.get("activityName") or data.get("defaultActivityName")
+    activities = data.get("projectActivities") or data.get("activities")
+    if activity_name and not activities:
+        activities = [activity_name]
+    if not activities:
+        return None
+    pa_list = []
+    for act in activities:
+        if isinstance(act, str):
+            pa_list.append({"activity": {"name": act, "activityType": "PROJECT_SPECIFIC_ACTIVITY"}})
+        elif isinstance(act, dict):
+            pa_list.append(act if "activity" in act else {"activity": {**act, "activityType": act.get("activityType", "PROJECT_SPECIFIC_ACTIVITY")}})
+    return pa_list or None
+
+
+async def create_projects_batch(data: dict, client: TripletexClient) -> dict:
+    """Create multiple projects in a single POST /project/list call.
+
+    Resolves PM once and reuses the ID for all projects.
+    Embeds projectActivities in each project payload.
+
+    Input data fields:
+    - projects: list of project dicts (each with name, activityName, etc.)
+    - projectManagerId/Email/Name: shared PM for all projects (resolved once)
+    - startDate: shared start date (default: today)
+    - isInternal: shared flag (default: not set)
+    - Any other shared fields applied to all projects
+    """
+    projects = data.get("projects", [])
+    if not projects:
+        return {"error": "No projects provided. Pass a 'projects' array."}
+
+    # Resolve PM once using shared PM fields
+    manager_id = await _resolve_project_manager(data, client)
+    if not manager_id:
+        return {"error": "No project manager available"}
+    logger.info("Batch: resolved PM id=%d (once for %d projects)", manager_id, len(projects))
+
+    # Shared defaults
+    shared_start = data.get("startDate", date.today().isoformat())
+    shared_internal = data.get("isInternal")
+
+    payloads = []
+    for proj in projects:
+        p = {
+            "name": proj.get("name", ""),
+            "projectManager": {"id": manager_id},
+            "startDate": proj.get("startDate", shared_start),
+        }
+        if proj.get("number"):
+            p["number"] = str(proj["number"])
+        if proj.get("description"):
+            p["description"] = proj["description"]
+        if proj.get("endDate"):
+            p["endDate"] = proj["endDate"]
+        is_internal = proj.get("isInternal", shared_internal)
+        if is_internal is not None:
+            p["isInternal"] = is_internal
+        if proj.get("isFixedPrice") is not None:
+            p["isFixedPrice"] = proj["isFixedPrice"]
+        fp = proj.get("fixedprice") or proj.get("fixedPrice") or proj.get("price")
+        if fp is not None:
+            p["fixedprice"] = fp
+            p["isFixedPrice"] = True
+
+        # Embed activities
+        pa_list = _build_activity_list(proj)
+        if pa_list:
+            p["projectActivities"] = pa_list
+
+        payloads.append(p)
+
+    logger.info("Batch creating %d projects via POST /project/list", len(payloads))
+    result = await client.post("/project/list", payloads)
+
+    created = result.get("values", [])
+    if created:
+        ids = [p.get("id") for p in created]
+        logger.info("Batch created %d projects: %s", len(created), ids)
+    else:
+        logger.error("Batch project creation failed: %s", result)
 
     return result

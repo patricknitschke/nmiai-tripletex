@@ -130,6 +130,7 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     vat_rate = data.get("vatRate", 25)
     expense_account = data.get("expenseAccount", data.get("account"))
     voucher_type = data.get("voucherType")
+    project_id = data.get("projectId")
 
     # Calculate amounts
     amount_incl = data.get("amountInclVat") or data.get("amount") or data.get("totalAmount")
@@ -192,6 +193,8 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
         expense_posting["account"] = {"id": expense_account_id}
     if vat_type_id:
         expense_posting["vatType"] = {"id": vat_type_id}
+    if project_id:
+        expense_posting["project"] = {"id": project_id}
     postings.append(expense_posting)
 
     # Row 2: Credit AP account 2400 with negative gross + supplier ref
@@ -290,13 +293,16 @@ _SUPPLIER_ACCOUNTS = {"2400", "2401"}
 _SYSTEM_ACCOUNTS = _VAT_ACCOUNTS | _SUPPLIER_ACCOUNTS
 
 
-async def _resolve_postings(postings_data: list, voucher_date: str, description: str, client: TripletexClient, no_vat_type_id: int | None = None) -> list[dict]:
+async def _resolve_postings(postings_data: list, voucher_date: str, description: str, client: TripletexClient, no_vat_type_id: int | None = None, voucher_customer_id: int | None = None) -> list[dict]:
     """Resolve account numbers to IDs for each posting.
 
     B25v2: Detects and drops system-managed postings (2710 VAT, 2400 supplier).
     When the LLM sends 3 postings (expense + 2710 + 2400), we keep only the
     expense line with amountGross and let Tripletex auto-generate the rest.
     The expense line gets the account's default vatType so Tripletex can split.
+
+    B41v2: If voucher_customer_id is provided and an account has ledgerType=CUSTOMER,
+    auto-attaches customer even if the posting didn't explicitly have customerId.
     """
     # First pass: resolve accounts and discover VAT configs
     # row>=1 because row 0 is reserved for system-generated postings
@@ -314,10 +320,11 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
         account_number = p.get("account") or p.get("accountNumber")
         account_has_default_vat = False
         acc_num_str = str(account_number) if account_number else ""
+        account_ledger_type = None
         if account_number:
             result = await client.get("/ledger/account", params={
                 "number": acc_num_str, "count": "1",
-                "fields": "id,vatType,vatLocked",
+                "fields": "id,vatType,vatLocked,ledgerType",
             })
             accounts = result.get("values", [])
             if accounts:
@@ -325,6 +332,7 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
                 posting["account"] = {"id": acc["id"]}
                 if acc.get("vatLocked") or acc.get("vatType"):
                     account_has_default_vat = True
+                account_ledger_type = acc.get("ledgerType")
 
         # VAT type: only set on non-system accounts
         if p.get("vatTypeId"):
@@ -333,12 +341,20 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
             posting["vatType"] = {"id": no_vat_type_id}
 
         # Customer / supplier references (required for AR / AP accounts)
+        # B41v2: also detect via ledgerType from account lookup (authoritative)
         customer_id = p.get("customerId")
         if customer_id:
             posting["customer"] = {"id": customer_id}
+        elif account_ledger_type == "CUSTOMER" and voucher_customer_id:
+            posting["customer"] = {"id": voucher_customer_id}
+            logger.info("B41v2: Auto-attached voucher customer %d to ledgerType=CUSTOMER account %s", voucher_customer_id, acc_num_str)
+        elif account_ledger_type == "CUSTOMER":
+            logger.warning("B41v2: Account %s has ledgerType=CUSTOMER but no customerId available — voucher may 422", acc_num_str)
         supplier_id = p.get("supplierId")
         if supplier_id:
             posting["supplier"] = {"id": supplier_id}
+        elif account_ledger_type == "SUPPLIER" and not p.get("supplierId"):
+            logger.warning("B41v2: Account %s has ledgerType=SUPPLIER but no supplierId on posting — voucher may 422", acc_num_str)
 
         # Accounting dimension support
         dim_id = p.get("dimensionId")
@@ -440,6 +456,40 @@ async def _post_voucher(voucher: dict, client: TripletexClient) -> dict:
     return result
 
 
+# AR accounts that require a customer reference on postings
+_AR_ACCOUNTS = {str(n) for n in range(1500, 1600)}
+
+
+async def _resolve_customer_for_voucher(data: dict, client: TripletexClient) -> int | None:
+    """Resolve customer ID from voucher-level customerName/customerId.
+
+    B41 fix: Tripletex requires customer.id on postings to AR accounts (1500-1599).
+    This resolves the customer once at the voucher level and injects it into AR postings.
+    """
+    customer_id = data.get("customerId")
+    if customer_id:
+        return customer_id
+
+    customer_name = data.get("customerName")
+    if not customer_name:
+        return None
+
+    result = await client.get("/customer", params={"name": customer_name, "count": "10"})
+    for cust in result.get("values", []):
+        if cust.get("name", "").lower() == customer_name.lower():
+            logger.info("Resolved voucher customer '%s' -> id=%d", customer_name, cust["id"])
+            return cust["id"]
+
+    # Fuzzy: return first result if any
+    values = result.get("values", [])
+    if values:
+        logger.info("Resolved voucher customer '%s' (fuzzy) -> id=%d", customer_name, values[0]["id"])
+        return values[0]["id"]
+
+    logger.warning("Could not resolve customer '%s' for voucher", customer_name)
+    return None
+
+
 async def create_voucher(data: dict, client: TripletexClient) -> dict:
     """Create a manual journal entry / voucher with custom postings.
 
@@ -448,6 +498,10 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
 
     If the postings contain multiple balanced debit/credit pairs (e.g. from
     a closing task), they are automatically split into separate vouchers.
+
+    B41 fix: If customerName/customerId is provided at the top level, it is
+    auto-attached to any postings on AR accounts (1500-1599) that don't already
+    have a customer reference. This prevents the 422 "Kunde mangler" error.
     """
     today = date.today().isoformat()
     voucher_date = data.get("date", today)
@@ -456,6 +510,16 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
     postings_data = data.get("postings", [])
     if not postings_data:
         return {"error": "No postings provided for voucher"}
+
+    # B41 fix: resolve customer for AR account postings
+    voucher_customer_id = await _resolve_customer_for_voucher(data, client)
+    if voucher_customer_id:
+        # Inject customer into any AR posting that doesn't already have one
+        for p in postings_data:
+            acc = str(p.get("account") or p.get("accountNumber") or "")
+            if acc in _AR_ACCOUNTS and not p.get("customerId"):
+                p["customerId"] = voucher_customer_id
+                logger.info("B41: Auto-attached customer %d to AR posting (account %s)", voucher_customer_id, acc)
 
     # B21 fix: resolve 0% VAT type to explicitly mark postings as no-VAT.
     # This prevents Tripletex from auto-generating system VAT postings on accounts
@@ -469,7 +533,7 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
 
     results = []
     for i, group in enumerate(groups):
-        postings = await _resolve_postings(group, voucher_date, description, client, no_vat_type_id=no_vat_type_id)
+        postings = await _resolve_postings(group, voucher_date, description, client, no_vat_type_id=no_vat_type_id, voucher_customer_id=voucher_customer_id)
 
         voucher = {
             "date": voucher_date,

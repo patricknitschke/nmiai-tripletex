@@ -17,7 +17,7 @@ POST /solve (100s deadline)
     - Passes IDs between workflow calls
 ```
 
-**23 workflows** covering T1/T2/T3 tasks. See `docs/add_workflows.md` for backlog.
+**26 workflows** covering T1/T2/T3 tasks. See `docs/add_workflows.md` for backlog.
 
 **Key design principles:**
 - Chief plans fast (no files), Senior executes with full context
@@ -26,6 +26,9 @@ POST /solve (100s deadline)
 - All name searches use count=10 + exact match (no partial match bugs)
 - 100s deadline with 20s buffer before 120s cloudflare timeout
 - BETA endpoints blocked, lookup_api flags them
+- **Efficiency: batch APIs** — POST /project/list for multi-project, /resultbudget/company for aggregated data
+- **Efficiency: cache IDs** — resolve entity once, reuse ID; trust 201 responses (no verify GETs)
+- **Efficiency: embed sub-resources** — projectActivities in project creation payload
 
 ## Current State — v30 (Competition Day 3)
 
@@ -50,7 +53,7 @@ POST /solve (100s deadline)
 **No workflow / gaps:**
 - Payroll (W1) — **register_payroll workflow built (v33)**, handles base salary + bonus via /salary/transaction with specifications. Auto-creates employment if missing. **B27 fix**: full GET before PUT for version. **B28 fix**: employment now linked to company division via GET /division (required for salary transactions).
 - Project invoices (W4) — no workflow, agent spirals on raw API
-- Ledger error correction (W11) — **analyze_ledger workflow built (P3)**, needs competition test
+- Ledger error correction (W11) — **analyze_ledger workflow built (P3)**, needs competition test. **compare_expenses workflow (v35)** uses /resultbudget/company for expense comparison (1 call vs N posting fetches)
 - Monthly/yearly closing — **Chief bypass added (P2)**, Senior handles directly for closing tasks
 - Custom dimensions — **create_dimension workflow built (v30)**, handles name + values in one call. Voucher dimension linking works via freeAccountingDimension1/2/3. **create_dimension_voucher combo (v34)** chains dimension creation + voucher posting in one atomic call
 
@@ -80,7 +83,7 @@ POST /solve (100s deadline)
 | Credit notes | T2 | `create_credit_note` | 1/5 | VAT interpretation + search-before-create both improved but **never retested** |
 | Supplier invoices | T3 | `create_supplier_invoice` | 5/6 | **B36 FIXED:** Was 1-posting (unbalanced). Now 2-posting: expense debit with vatType + AP 2400 credit with supplier ref. Same proven pattern as register_expense |
 | Project invoices | T2-T3 | `create_project_invoice` | 0 | **NEW v34**: Fixed-price % invoicing + time-based invoicing from timesheet hours. Needs competition test |
-| Reminder invoices | T2 | Fallback | 4/6 | Account 1500 is system-managed, voucher posting fails |
+| Reminder invoices | T2 | `find_overdue_invoices` + `create_voucher` + `create_invoice` + `register_payment` | 4/6 | **B41 FIXED**: (1) `find_overdue_invoices` workflow finds real overdue invoice + customer (2) `create_voucher` auto-attaches customer to AR account 1500 postings (3) Chief prompt guides 4-step order: find → voucher → invoice → payment |
 
 ### Travel Expenses (T2)
 | Task | Tier | Workflow | Best Score | Weakness |
@@ -92,7 +95,8 @@ POST /solve (100s deadline)
 ### Projects (T2-T3)
 | Task | Tier | Workflow | Best Score | Weakness |
 |---|---|---|---|---|
-| Create project | T2 | `create_project` | 4/4 | None |
+| Create project | T2 | `create_project` | 4/4 | None — now embeds activities + skips verify GET |
+| Batch projects | T2-T3 | `create_projects_batch` | — | **NEW v35**: POST /project/list, resolves PM once, embeds activities. 21 calls → 1 call |
 | Full project lifecycle | T3 | Multi-workflow | 6/7 (v21), 2/7 (v28 pre-fix) | **v28 FIXED:** B19 timesheet date floor + PM email. v21 scored 6/7 (only supplier invoice failed). v28 pre-fix regressed due to new date bug — now fixed with clamp + prompt |
 
 ### Corrections (T2-T3)
@@ -156,6 +160,11 @@ POST /solve (100s deadline)
 | 17 | register_expense | T3 | Receipt → voucher with department + input VAT. Senior uses `search_pdf` tool for targeted extraction |
 | 18 | analyze_ledger | T3 | Fetch postings, detect errors (imbalance/duplicate/orphaned VAT) |
 | 19 | create_dimension | T2 | Custom accounting dimension + values in one call |
+| 20 | register_payroll | T3 | Employee salary + bonus via /salary/transaction |
+| 21 | register_fx_payment | T3 | Foreign currency payment + exchange difference voucher |
+| 22 | create_project_invoice | T2-T3 | Project invoicing: fixed-price % or time-based |
+| 23 | create_dimension_voucher | T2 | Dimension creation + voucher posting in one call |
+| 24 | find_overdue_invoices | T2 | Finds overdue invoices + returns customer info for downstream steps |
 
 ## Bug Fix History
 
@@ -191,6 +200,8 @@ POST /solve (100s deadline)
 | B37 | Receipt expense: wrong VAT rate (25% for flights) + multi-item receipt lumped into single posting | 0/5 — Flight tickets are 12% MVA (persontransport lav sats), not 25%. Receipt also had office supplies needing separate account/rate. LLM had no VAT category guidance and no way to ask targeted questions about PDFs | ✅ FIXED — (1) `search_pdf` tool added: Senior uses Flash to ask targeted questions about PDF content instead of getting raw PDF attached. Forces structured extraction. (2) Norwegian VAT rate table added to Senior prompt (25%/15%/12%/0% with categories). (3) Multi-item receipt instructions: call register_expense once per line item. |
 | B39 | FX invoice created in NOK not foreign currency | 2/4 — `register_fx_payment` pre-converted 6893 EUR × 10.37 = 71480.41 NOK and created order without currency. Tripletex thinks it's domestic invoice (currency id=1 = NOK). | ✅ FIXED — Now creates order with `currency: {id: EUR_id}` and uses foreign amount (6893) as line price. Added `_lookup_currency_id()` helper. |
 | B40 | FX invoice not settled (amountOutstanding ≠ 0) | 2/4 — Payment registered 68033.91 NOK but invoice was 71480.41 NOK → amountOutstanding = 3446.50. Disagio voucher hit GL but didn't close the invoice. | ✅ FIXED — Payment now passes both `paidAmount` (68033.91 NOK received) AND `paidAmountCurrency` (6893 EUR = full foreign amount). Invoice fully settled at 0 outstanding. |
+| B41 | Chief fabricates customers + create_voucher 422 "Kunde mangler" on AR postings | Overdue invoice task: (1) Chief invented "Musterkunde GmbH" instead of finding real customer. (2) Voucher 422 because AR account 1500 requires customer reference. (3) Double-booking: invoice + manual voucher for same 70 NOK. (4) Wrong execution order: payment before finding invoice. | ✅ FIXED — (1) `find_overdue_invoices` workflow searches real invoices. (2) `create_voucher` auto-attaches customer to AR postings (1500-1599) via `customerName`/`customerId` fields. (3) Chief prompt: explicit 4-step order for overdue tasks + NEVER fabricate names. (4) Senior prompt: overdue invoice guidance. (5) Schema: `customerName`/`customerId` added to `create_voucher`. |
+| B42 | create_supplier_invoice expense posting missing project reference | Project lifecycle: 71800 kr supplier cost on account 6300 not linked to project "Dataplattform Brattli" — cost invisible in project reports/economy. | ✅ FIXED — Added `projectId` param to schema + workflow. Expense posting (row 1) now includes `project: {id}` when projectId is provided. |
 
 ## Day 3 Evening — Priority Action Queue (March 21)
 

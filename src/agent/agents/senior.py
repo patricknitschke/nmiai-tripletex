@@ -101,8 +101,12 @@ Always use lookup_api first to get the correct endpoint schema.
 - **Receipts/kvitteringer with MULTIPLE items:** If a receipt has items at different VAT rates or \
   different expense accounts, call register_expense ONCE PER LINE ITEM. For example, a receipt with \
   a flight ticket (12% VAT, account 7140) and office supplies (25% VAT, account 6800) needs TWO \
-  separate register_expense calls. Use search_pdf to extract each line item before calling workflows.
-- **PDF files:** You do NOT see PDF contents directly. Use the search_pdf tool to extract data from \
+  separate register_expense calls. Use search_pdf to extract each line item before calling workflows.- **Overdue invoice / reminder fee / Mahngebühr tasks:** Use find_overdue_invoices FIRST to find the real \
+  invoice and customer. NEVER invent customer names. The result gives you customerName, customerId, \
+  invoiceId, and amountOutstanding. Pass customerName to create_voucher (REQUIRED for account 1500 \
+  AR postings) and invoiceId to register_payment. The create_invoice for the reminder fee is a separate \
+  billing document — it does not double-book with the voucher because the invoice posts to default \
+  revenue accounts while the voucher uses specific GL accounts (e.g. 1500/3400).- **PDF files:** You do NOT see PDF contents directly. Use the search_pdf tool to extract data from \
   attached PDFs. Ask SPECIFIC questions: items, amounts, dates, supplier name, etc. For receipts, \
   ALWAYS ask for ALL individual line items with their amounts and categories.
 - **Employment contracts (tilbudsbrev/arbeidskontrakt/carta de oferta/Arbeitsvertrag):** Use register_employment. \
@@ -128,6 +132,19 @@ Always use lookup_api first to get the correct endpoint schema.
   the project start date. Use today's date for all time entries on new projects. If you need to register many \
   hours, put them all on today (or split across today and future dates). NEVER use past dates for new projects.
 - **Project manager:** Pass projectManagerEmail to the create_project workflow to set the correct person.
+- **Batch project creation:** When creating MULTIPLE projects, use create_projects_batch — it resolves PM once \
+  and creates all projects + activities in a single POST /project/list call. Pass a "projects" array with each \
+  project's name, activityName, etc. Much more efficient than calling create_project in a loop.
+- **Embed activities in projects:** Pass activityName or projectActivities to create_project / create_projects_batch. \
+  Activities are embedded in the creation payload — no need for separate POST /project/projectActivity calls.
+- **Expense comparison across months:** Use compare_expenses (not analyze_ledger) when comparing expenses across \
+  months or finding top accounts by amount. It uses GET /resultbudget/company for pre-aggregated monthly totals \
+  — one efficient call instead of fetching raw postings.
+- **Cache resolved IDs:** After resolving an employee, customer, or entity by name/email, REUSE the ID for \
+  subsequent calls. Do NOT call GET /employee?email=... repeatedly for the same person. Store the ID and pass it \
+  directly (e.g. projectManagerId instead of projectManagerEmail on the 2nd+ call).
+- **Trust 201 responses:** After a successful POST that returns 201 with the created object, use the ID/data from \
+  the response directly. Do NOT immediately GET the same resource to "verify" — that wastes a call.
 - **Partial failures:** Workflows may return `"ok": false` with `"errors"` and `"_needs_repair"`. \
   This means the main resource was created but sub-steps failed (e.g. cost lines, employment details, \
   dimension values). READ the `_needs_repair` message — it tells you exactly what to fix with raw API calls. \

@@ -158,3 +158,93 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
             ),
         }
     }
+
+
+async def compare_expenses(data: dict, client: TripletexClient) -> dict:
+    """Compare expenses across months using pre-aggregated resultbudget data.
+
+    Uses GET /resultbudget/company which returns monthly totals per account
+    in a single call — much more efficient than fetching raw postings.
+
+    Input data fields:
+    - year: year to analyze (default: current year)
+    - accountFrom: optional account range start (e.g. 4000)
+    - accountTo: optional account range end (e.g. 7999)
+    - topN: number of top accounts to return (default: 10)
+    """
+    today = date.today()
+    year = data.get("year", today.year)
+    top_n = data.get("topN", 10)
+
+    logger.info("Comparing expenses for year %d via resultbudget/company", year)
+
+    params = {
+        "year": str(year),
+        "fields": "account(number,name),amount,accountingPeriod(*)",
+        "count": "10000",
+    }
+    if data.get("accountFrom"):
+        params["accountNumberFrom"] = str(data["accountFrom"])
+    if data.get("accountTo"):
+        params["accountNumberTo"] = str(data["accountTo"])
+
+    result = await client.get("/resultbudget/company", params=params)
+    entries = result.get("values", [])
+    logger.info("Fetched %d resultbudget entries", len(entries))
+
+    if not entries:
+        return {"value": {"entries_count": 0, "monthly_totals": {}, "top_accounts": [], "summary": "No resultbudget data found"}}
+
+    # Group by account and period
+    account_totals: dict[str, dict] = {}  # account_number -> {name, months: {period: amount}, total}
+    for entry in entries:
+        acct = entry.get("account", {})
+        acct_num = str(acct.get("number", "?")) if isinstance(acct, dict) else "?"
+        acct_name = acct.get("name", "") if isinstance(acct, dict) else ""
+        amount = entry.get("amount", 0)
+        period = entry.get("accountingPeriod", {})
+        period_num = period.get("number") if isinstance(period, dict) else None
+
+        if acct_num not in account_totals:
+            account_totals[acct_num] = {"name": acct_name, "months": {}, "total": 0}
+
+        if period_num is not None:
+            account_totals[acct_num]["months"][period_num] = (
+                account_totals[acct_num]["months"].get(period_num, 0) + amount
+            )
+        account_totals[acct_num]["total"] += amount
+
+    # Top N accounts by absolute total
+    sorted_accounts = sorted(account_totals.items(), key=lambda x: abs(x[1]["total"]), reverse=True)
+    top_accounts = [
+        {
+            "account": num,
+            "name": info["name"],
+            "total": round(info["total"], 2),
+            "months": {k: round(v, 2) for k, v in sorted(info["months"].items())},
+        }
+        for num, info in sorted_accounts[:top_n]
+    ]
+
+    # Monthly grand totals
+    monthly_totals: dict[int, float] = {}
+    for info in account_totals.values():
+        for month, amount in info["months"].items():
+            monthly_totals[month] = monthly_totals.get(month, 0) + amount
+    monthly_totals = {k: round(v, 2) for k, v in sorted(monthly_totals.items())}
+
+    logger.info("Expense comparison complete: %d accounts, top %d returned", len(account_totals), top_n)
+
+    return {
+        "value": {
+            "entries_count": len(entries),
+            "accounts_count": len(account_totals),
+            "monthly_totals": monthly_totals,
+            "top_accounts": top_accounts,
+            "summary": (
+                f"Analyzed {len(account_totals)} accounts for {year}. "
+                f"Top {top_n} accounts by total amount included. "
+                "Monthly totals show expense trends across periods."
+            ),
+        }
+    }

@@ -62,6 +62,10 @@ Your plan should ALWAYS include a search step first for tasks that reference exi
 - "Register payment on invoice" → First step: search for the existing invoice. If not found, create it.
 - "Issue credit note for invoice" → First step: search for the existing invoice. If not found, create it.
 - "Create employee/customer/product" → These are usually new, but the workflows handle search-before-create.
+- **"Overdue invoice" / "Mahngebühr" / "late fee" / "reminder fee"** → MUST use find_overdue_invoices \
+  as the FIRST step. This finds the real customer and invoice. NEVER invent a customer name like \
+  "Musterkunde GmbH" — the customer ALREADY EXISTS in Tripletex with a real overdue invoice. \
+  Pass the customerName and invoiceId from the find result to ALL subsequent steps.
 
 NEVER say "I can't proceed because X doesn't exist." If a search finds nothing, CREATE what's needed.
 
@@ -103,6 +107,14 @@ Return ONLY valid JSON:
   Only use vatRatePercent: 0 when the prompt explicitly says the service is TAX EXEMPT.
 - For tasks that don't match any workflow, use suggested_workflow: "fallback".
 - Most tasks need only 1 step — many workflows handle prerequisites internally.
+- **Overdue invoice / reminder fee tasks** require this EXACT order: \
+  (1) find_overdue_invoices to discover the real invoice + customer, \
+  (2) create_voucher for the GL entry (pass customerName from step 1 — required for AR account 1500), \
+  (3) create_invoice for the reminder fee to the same customer (do NOT skip — it's a separate document), \
+  (4) register_payment partial payment on the overdue invoice (pass invoiceId from step 1). \
+  The invoice in step 3 and the voucher in step 2 are NOT double-booking — the invoice is a billing \
+  document sent to the customer, and the voucher records the fee on specific GL accounts (1500/3400) \
+  which may differ from the invoice's auto-generated postings.
 - **KEEP PLANS SHORT: maximum 5 steps.** For CSV/bulk tasks (bank reconciliation, batch processing), \
   create ONE high-level step per category (e.g., "process all customer payments", "process all supplier payments"), \
   NOT one step per row. The sub-agent will loop through the data within each step.

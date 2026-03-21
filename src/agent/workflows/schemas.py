@@ -203,7 +203,9 @@ TASK_SCHEMAS: dict[str, dict] = {
         "notes": (
             "projectManager is required — pass projectManagerEmail to set the correct person. "
             "The workflow resolves by email first, then name, then falls back to any employee. "
-            "startDate defaults to today if not specified. Do not guess employee IDs."
+            "startDate defaults to today if not specified. Do not guess employee IDs. "
+            "Supports activityName to embed a project activity at creation time (no separate call needed). "
+            "For MULTIPLE projects, use create_projects_batch instead."
         ),
         "fields": [
             {"name": "name", "type": "string", "required": True, "description": "Project name"},
@@ -222,6 +224,32 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "mainProjectId", "type": "integer", "required": False, "description": "Parent project ID if this is a sub-project"},
             {"name": "customerName", "type": "string", "required": False, "description": "Customer name (resolved to ID by workflow)"},
             {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Customer org number (resolved to ID by workflow)"},
+            {"name": "activityName", "type": "string", "required": False, "description": "Name of a project activity to create with the project (embedded in payload, no separate call)"},
+            {"name": "projectActivities", "type": "array", "required": False, "description": "List of activities — strings or {name, activityType} dicts. Embedded at creation time."},
+            {"name": "projectManagerId", "type": "integer", "required": False, "description": "PM employee ID if already known (skips resolution — use when caching from a previous call)"},
+        ],
+    },
+    "create_projects_batch": {
+        "api_endpoint": "POST /project/list",
+        "notes": (
+            "Creates MULTIPLE projects in a single API call. Resolves PM once and reuses for all projects. "
+            "Embeds projectActivities in each project. MUCH more efficient than calling create_project in a loop. "
+            "Use this when the task asks to create 2+ projects."
+        ),
+        "fields": [
+            {"name": "projects", "type": "array", "required": True, "description": "List of project dicts. Each must have 'name', may have 'activityName', 'isInternal', etc.",
+             "items": [
+                 {"name": "name", "type": "string", "description": "Project name"},
+                 {"name": "activityName", "type": "string", "description": "Activity to embed in this project"},
+                 {"name": "isInternal", "type": "boolean", "description": "True if internal"},
+                 {"name": "number", "type": "string", "description": "Project number"},
+                 {"name": "startDate", "type": "string", "description": "Start date (YYYY-MM-DD)"},
+             ]},
+            {"name": "projectManagerEmail", "type": "string", "required": False, "description": "Shared PM email (resolved once for all projects)"},
+            {"name": "projectManagerName", "type": "string", "required": False, "description": "Shared PM full name"},
+            {"name": "projectManagerId", "type": "integer", "required": False, "description": "Shared PM ID if already known"},
+            {"name": "startDate", "type": "string", "required": False, "description": "Shared start date for all projects (default: today)"},
+            {"name": "isInternal", "type": "boolean", "required": False, "description": "Shared isInternal flag for all projects"},
         ],
     },
     "create_supplier_invoice": {
@@ -243,6 +271,7 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "expenseAccount", "type": "number", "required": True, "description": "Expense account number (e.g. 7300 for office services, 6300 for consulting)"},
             {"name": "description", "type": "string", "required": False, "description": "What the invoice is for"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Invoice date (defaults to today)"},
+            {"name": "projectId", "type": "integer", "required": False, "description": "Project ID to link the expense to (for project lifecycle tasks with supplier costs)"},
         ],
     },
     "create_dimension": {
@@ -265,11 +294,15 @@ TASK_SCHEMAS: dict[str, dict] = {
             "Creates a manual journal entry / voucher with custom postings. "
             "Use this for general ledger entries, corrections, or accounting entries "
             "that don't fit other workflow patterns. Each posting is a debit (positive amount) "
-            "or credit (negative amount) on an account."
+            "or credit (negative amount) on an account. "
+            "IMPORTANT: For postings on AR accounts (1500-1599), you MUST provide customerName "
+            "or customerId at the top level — Tripletex requires a customer reference on AR postings."
         ),
         "fields": [
             {"name": "description", "type": "string", "required": True, "description": "Voucher description"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Voucher date (defaults to today)"},
+            {"name": "customerName", "type": "string", "required": False, "description": "Customer name — auto-attached to AR account postings (1500-1599). REQUIRED when posting to 1500."},
+            {"name": "customerId", "type": "integer", "required": False, "description": "Customer ID — auto-attached to AR account postings (1500-1599). Use if ID is known."},
             {"name": "postings", "type": "array of objects", "required": True, "description": "List of posting lines", "items": [
                 {"name": "account", "type": "number", "required": True, "description": "Account number (e.g. 6300, 2400)"},
                 {"name": "amount", "type": "number", "required": True, "description": "Amount: positive = debit, negative = credit"},
@@ -382,13 +415,30 @@ TASK_SCHEMAS: dict[str, dict] = {
             "For error correction (retting/correction/Korrektur/correction/correção): analyze_ledger → create_voucher. "
             "IMPORTANT for missing-VAT corrections: do NOT post directly to account 2710 (system-managed). Instead: "
             "(1) create_voucher to reverse the original no-VAT posting, then (2) register_expense with amountInclVat "
-            "(original amount × 1.25 for 25% VAT) — this auto-generates the 2710 VAT posting."
+            "(original amount × 1.25 for 25% VAT) — this auto-generates the 2710 VAT posting. "
+            "NOTE: For EXPENSE COMPARISON across months (not error correction), use compare_expenses instead — it uses "
+            "pre-aggregated monthly totals from /resultbudget/company, which is faster and avoids pagination issues."
         ),
         "fields": [
             {"name": "dateFrom", "type": "string (YYYY-MM-DD)", "required": False, "description": "Start date for analysis (default: Jan 1 current year)"},
             {"name": "dateTo", "type": "string (YYYY-MM-DD)", "required": False, "description": "End date for analysis (default: Feb 28 current year)"},
             {"name": "accountFrom", "type": "integer", "required": False, "description": "Optional: only analyze accounts from this number"},
             {"name": "accountTo", "type": "integer", "required": False, "description": "Optional: only analyze accounts up to this number"},
+        ],
+    },
+    "compare_expenses": {
+        "api_endpoint": "GET /resultbudget/company",
+        "notes": (
+            "Compares expenses across months using pre-aggregated resultbudget data. Returns monthly totals "
+            "per account and top N accounts by amount. ONE efficient call — no pagination risk. "
+            "Use this for expense comparison, trend analysis, 'which accounts spent most', 'compare Jan vs Feb'. "
+            "Do NOT use analyze_ledger for this — that fetches raw postings and risks missing rows."
+        ),
+        "fields": [
+            {"name": "year", "type": "integer", "required": False, "description": "Year to analyze (default: current year)"},
+            {"name": "accountFrom", "type": "integer", "required": False, "description": "Account range start (e.g. 4000 for expenses)"},
+            {"name": "accountTo", "type": "integer", "required": False, "description": "Account range end (e.g. 7999)"},
+            {"name": "topN", "type": "integer", "required": False, "description": "Number of top accounts to return (default: 10)"},
         ],
     },
     "register_fx_payment": {
@@ -453,6 +503,22 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "voucherDescription", "type": "string", "required": False, "description": "Voucher description"},
             {"name": "voucherDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Voucher date"},
             {"name": "balancingAccount", "type": "number", "required": False, "description": "Credit/balancing account (default 2400)"},
+        ],
+    },
+    "find_overdue_invoices": {
+        "api_endpoint": "GET /invoice (filtered)",
+        "notes": (
+            "Finds overdue invoices (dueDate < today, amountOutstanding > 0). "
+            "Returns the most overdue invoice with customer details. Use this as the FIRST step "
+            "for any task mentioning overdue invoices, reminder fees (Mahngebühr), or late fees. "
+            "The result includes customerName, customerId, invoiceId, and amountOutstanding — "
+            "pass these to subsequent create_voucher, create_invoice, and register_payment steps. "
+            "NEVER fabricate a customer name — this workflow finds the REAL customer."
+        ),
+        "fields": [
+            {"name": "customerName", "type": "string", "required": False, "description": "Optional: filter by customer name"},
+            {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Optional: filter by organization number"},
+            {"name": "minAmount", "type": "number", "required": False, "description": "Optional: minimum outstanding amount"},
         ],
     },
 }
