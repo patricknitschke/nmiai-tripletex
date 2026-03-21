@@ -189,6 +189,8 @@ POST /solve (100s deadline)
 | B26 | B25v2 single posting still fails: guiRow 0 reserved for system-generated | Correct payload (1 posting + amountGross + vatType + supplier) rejected with same "rad 0 systemgenererte" error | ✅ FIXED — Add `"row": 1` to all user-created postings. Row 0 is reserved for Tripletex's auto-generated counterpart lines (2400 credit, MVA). |
 | B36 | create_supplier_invoice unbalanced (1 posting) + fx_payment missing customer on AR + wrong amount field | Supplier invoice 422 "sum not zero" — only sends expense debit, no AP credit. FX payment uses `amount` instead of `amountGross` + missing `customer.id` on 1500 posting. | ✅ FIXED — (1) create_supplier_invoice now 2-posting: expense debit with vatType + AP 2400 credit with supplier ref (same pattern as register_expense). (2) fx_payment uses `amountGross` + attaches customer from invoice to 1500 posting. (3) `_resolve_postings` propagates customerId/supplierId from posting data to resolved postings. |
 | B37 | Receipt expense: wrong VAT rate (25% for flights) + multi-item receipt lumped into single posting | 0/5 — Flight tickets are 12% MVA (persontransport lav sats), not 25%. Receipt also had office supplies needing separate account/rate. LLM had no VAT category guidance and no way to ask targeted questions about PDFs | ✅ FIXED — (1) `search_pdf` tool added: Senior uses Flash to ask targeted questions about PDF content instead of getting raw PDF attached. Forces structured extraction. (2) Norwegian VAT rate table added to Senior prompt (25%/15%/12%/0% with categories). (3) Multi-item receipt instructions: call register_expense once per line item. |
+| B39 | FX invoice created in NOK not foreign currency | 2/4 — `register_fx_payment` pre-converted 6893 EUR × 10.37 = 71480.41 NOK and created order without currency. Tripletex thinks it's domestic invoice (currency id=1 = NOK). | ✅ FIXED — Now creates order with `currency: {id: EUR_id}` and uses foreign amount (6893) as line price. Added `_lookup_currency_id()` helper. |
+| B40 | FX invoice not settled (amountOutstanding ≠ 0) | 2/4 — Payment registered 68033.91 NOK but invoice was 71480.41 NOK → amountOutstanding = 3446.50. Disagio voucher hit GL but didn't close the invoice. | ✅ FIXED — Payment now passes both `paidAmount` (68033.91 NOK received) AND `paidAmountCurrency` (6893 EUR = full foreign amount). Invoice fully settled at 0 outstanding. |
 
 ## Day 3 Evening — Priority Action Queue (March 21)
 
@@ -208,7 +210,7 @@ POST /solve (100s deadline)
 
 **Tasks NOT worth fixing (low ROI):**
 - Payroll (W1): **FIXED** — register_payroll workflow built after 4/4 fail on March 21. Now seen multiple times.
-- Forex disagio: Complex edge case, seen twice — would need dedicated workflow
+- Forex disagio: **B39+B40 FIXED** — invoice now created in foreign currency + paidAmountCurrency settles fully
 
 ## Tracking Files
 - `docs/tasks.csv` — 54+ competition prompts with scores, versions, analysis + summary section

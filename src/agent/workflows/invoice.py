@@ -232,6 +232,8 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
         "deliveryDate": due_date or invoice_date,
         "orderLines": order_lines,
     }
+    if data.get("currencyId"):
+        order_payload["currency"] = {"id": data["currencyId"]}
     if data.get("invoiceComment"):
         order_payload["invoiceComment"] = data["invoiceComment"]
 

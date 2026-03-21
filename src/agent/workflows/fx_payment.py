@@ -1,7 +1,8 @@
 """Foreign currency payment + exchange difference (disagio/agio) workflow.
 
-Handles: find invoice → register payment in NOK → calculate exchange
-difference → post gain/loss voucher.
+Handles: find/create invoice in foreign currency → register payment with
+paidAmount (NOK) + paidAmountCurrency (foreign) → post exchange
+difference voucher.
 
 Accounts:
 - 8060 Valutadifferanse (exchange loss = disagio, debit)
@@ -13,10 +14,31 @@ import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
+from .customer import create_customer
+from .invoice import _ensure_bank_account, _ensure_customer, _lookup_vat_type_by_rate
 from .payment import _find_invoice, _find_payment_type_id
 from .voucher import create_voucher
 
 logger = logging.getLogger("agent.workflows.fx_payment")
+
+
+async def _lookup_currency_id(code: str, client: TripletexClient) -> int | None:
+    """Resolve currency code (e.g. 'EUR') to Tripletex currency ID."""
+    result = await client.get("/currency", params={"code": code, "count": "1"})
+    currencies = result.get("values", [])
+    for c in currencies:
+        if c.get("code", "").upper() == code.upper():
+            logger.info("Resolved currency %s → id=%d", code, c["id"])
+            return c["id"]
+    # Fallback: search without code filter (some API versions don't support code param)
+    if not currencies:
+        result = await client.get("/currency", params={"count": "100"})
+        for c in result.get("values", []):
+            if c.get("code", "").upper() == code.upper():
+                logger.info("Resolved currency %s → id=%d (full scan)", code, c["id"])
+                return c["id"]
+    logger.error("Could not resolve currency code: %s", code)
+    return None
 
 
 async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
@@ -63,16 +85,58 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
         payment_rate, payment_nok, exchange_diff,
     )
 
+    # Step 0: Resolve foreign currency ID (needed for invoice creation)
+    currency_id = await _lookup_currency_id(currency, client)
+    if not currency_id:
+        return {"error": f"Could not resolve currency: {currency}"}
+
     # Step 1: Find the invoice
     invoice = await _find_invoice(data, client)
+
+    # Step 1b: If no invoice found, create one IN THE FOREIGN CURRENCY
     if not invoice:
-        return {"error": f"Could not find invoice for {data.get('customerName', 'unknown customer')}"}
+        logger.info("No existing invoice found — creating FX invoice in %s", currency)
+        await _ensure_bank_account(client)
+
+        customer_id = await _ensure_customer(data, client)
+        if not customer_id:
+            return {"error": "Could not resolve customer for FX invoice"}
+
+        # Resolve 0% VAT for FX invoices (foreign trade typically VAT-exempt)
+        vat_id = await _lookup_vat_type_by_rate(0, client)
+        order_lines = [{
+            "description": description or f"Invoice {currency}",
+            "count": 1,
+            "unitPriceExcludingVatCurrency": invoice_amount_fx,  # Foreign currency amount!
+        }]
+        if vat_id:
+            order_lines[0]["vatType"] = {"id": vat_id}
+
+        order_payload = {
+            "customer": {"id": customer_id},
+            "orderDate": today,
+            "deliveryDate": today,
+            "currency": {"id": currency_id},  # Set currency on the order!
+            "orderLines": order_lines,
+        }
+        logger.info("Creating FX order in %s (currency_id=%d, amount=%.2f %s)", currency, currency_id, invoice_amount_fx, currency)
+        order_result = await client.post("/order", order_payload)
+        order_id = order_result.get("value", {}).get("id")
+        if not order_id:
+            return {"error": f"Failed to create FX order: {order_result}"}
+
+        inv_result = await client.put(f"/order/{order_id}/:invoice", params={"id": str(order_id), "invoiceDate": today})
+        invoice = inv_result.get("value")
+        if not invoice:
+            return {"error": f"Failed to create FX invoice: {inv_result}"}
+        logger.info("Created FX invoice %d in %s", invoice["id"], currency)
 
     invoice_id = invoice["id"]
     customer_id = (invoice.get("customer") or {}).get("id")
     logger.info("Found invoice %d for FX payment (customer=%s)", invoice_id, customer_id)
 
-    # Step 2: Register payment at the actual NOK amount received
+    # Step 2: Register payment with BOTH paidAmount (NOK) and paidAmountCurrency (foreign)
+    # This fully settles the invoice in both currencies
     payment_type_id = data.get("paymentTypeId") or await _find_payment_type_id(client)
     if not payment_type_id:
         return {"error": "No payment type available"}
@@ -82,11 +146,10 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
         "paymentDate": payment_date,
         "paymentTypeId": str(payment_type_id),
         "paidAmount": str(payment_nok),
+        "paidAmountCurrency": str(payment_amount_fx),  # Settle full foreign currency amount
     }
-    if data.get("paidAmountCurrency"):
-        params["paidAmountCurrency"] = str(data["paidAmountCurrency"])
 
-    logger.info("Registering FX payment on invoice %d: %.2f NOK", invoice_id, payment_nok)
+    logger.info("Registering FX payment on invoice %d: %.2f NOK + %.2f %s", invoice_id, payment_nok, payment_amount_fx, currency)
     payment_result = await client.put(f"/invoice/{invoice_id}/:payment", params=params)
 
     payment_ok = payment_result.get("value", {}).get("id")
