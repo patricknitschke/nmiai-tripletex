@@ -87,7 +87,7 @@ POST /solve (100s deadline)
 |---|---|---|---|---|
 | Create travel expense | T2 | `create_travel_expense` | 4/6 | **B21 FIXED:** Per diem was added as cost line, now uses `/travelExpense/perDiemCompensation` endpoint with rateType+rateCategory |
 | Delete travel expense | T2 | `delete_travel_expense` | — | Built, never seen in competition |
-| Receipt expenses | T3 | `register_expense` | — | Built but never scored. None propagation bug in account resolution |
+| Receipt expenses | T3 | `register_expense` | 0/0 | **B24 FIXED:** Was calling client.post() directly, missing _post_voucher retry chain. Systemgenererte 422 on account 7350 |
 
 ### Projects (T2-T3)
 | Task | Tier | Workflow | Best Score | Weakness |
@@ -182,6 +182,7 @@ POST /solve (100s deadline)
 | B21 | Per diem added as cost line | 2/6 checks fail on travel expense — perDiemCompensations empty | ✅ FIXED — uses `/travelExpense/perDiemCompensation` endpoint with rateType+rateCategory lookup |
 | B22 | Supplier invoice "systemgenererte" 422 | 1/6 on supplier invoices — account default VAT config conflicts with amountGross+vatType | ✅ FIXED — manual 3-posting split with `amount` (net) + explicit no-VAT type. Also hardened `_post_voucher` retries with no-VAT type |
 | B23 | Voucher systemgenererte on ALL accounts | Dimension voucher 3/6, supplier invoice 5/6 — no-VAT type id=5 is OUTPUT ("Ingen utgående avgift") but expense accounts need INPUT. All retries fail | ✅ FIXED — `_post_voucher` retry 1 now strips vatType entirely (lets Tripletex use account default). Also added `create_dimension` workflow to avoid API fumbling |
+| B24 | register_expense bypasses _post_voucher retry | Receipt expense 0/0 — account 7350 (Representasjon) 422 systemgenererte. register_expense calls client.post() directly, missing all retry logic | ✅ FIXED — register_expense now uses _post_voucher() from voucher.py |
 
 ## Day 3 Evening — Priority Action Queue (March 21)
 
@@ -200,7 +201,6 @@ POST /solve (100s deadline)
 **All code fixes are deployed. The points are on the table — just need resubmissions.**
 
 **Tasks NOT worth fixing (low ROI):**
-- Receipt expenses: Chief PDF timeout is structural
 - Payroll (W1): Never seen again after 1 early attempt
 - Forex disagio: Complex edge case, seen twice — would need dedicated workflow
 

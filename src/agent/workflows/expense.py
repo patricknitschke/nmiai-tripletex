@@ -2,7 +2,7 @@ import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
-from .voucher import _resolve_vat_type
+from .voucher import _resolve_vat_type, _post_voucher
 
 logger = logging.getLogger("agent.workflows.expense")
 
@@ -119,7 +119,7 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     }
 
     logger.info("Creating expense voucher with 2 postings")
-    result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
+    result = await _post_voucher(voucher, client)
 
     voucher_id = result.get("value", {}).get("id")
     if voucher_id:

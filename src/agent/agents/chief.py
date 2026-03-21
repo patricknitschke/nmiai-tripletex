@@ -57,11 +57,10 @@ NEVER say "I can't proceed because X doesn't exist." If a search finds nothing, 
 {workflow_catalog}
 
 ## Your Process
-1. **THINK** about what the task requires and what dependencies exist:
-   - What resources need to exist before the main task can succeed?
+1. **DESIGN** a task list in 20s.
+   - Which resources (invoices, customers, projects, employees) need to exist for this task?
    - What is the correct order of operations?
    - Which workflows handle prerequisite creation automatically vs which need explicit steps?
-2. **DESIGN** a concrete step-by-step solution, not just a task list.
 
 ## Output Format
 Return ONLY valid JSON:
