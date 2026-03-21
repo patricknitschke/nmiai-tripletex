@@ -172,14 +172,35 @@ POST /solve (100s deadline)
 | B11 | Wrong input VAT type | Supplier invoice 422 | Case-insensitive + exclude wrong direction |
 | B12 | HTML 404 crash | Non-JSON response kills task | try/except in TripletexClient |
 | B13 | Chief receives PDFs | Slow planning → no time for execution | Skip files in chief_plan() |
+| B14 | 429 RESOURCE_EXHAUSTED | Unhandled crash on rate limit | Retry with backoff (3 attempts) |
 | 9v | "sin IVA" = 0% VAT | Wrong invoice amounts | Prompt: excl-VAT ≠ exempt |
+| **B16** | **Employee start-date routing** | **5/7 → 7/7 on employee tasks** | **OPEN — Chief PLAN_PROMPT needs start-date keyword** |
+| **B18** | **Supplier invoice voucherType** | **Blocks P1 bank recon (1/2 ×4)** | **OPEN — try without voucherType on first attempt** |
+
+## Day 3 Afternoon — Priority Action Queue (March 21, 14:30)
+
+**Full log analysis completed: 54 submissions across v13-v21.**
+
+| # | Action | Expected Points | Effort | Risk |
+|---|--------|----------------|--------|------|
+| 1 | **Resubmit credit notes (P4)** | 6-12 pts (T2×2, 3 tasks) | Zero code changes | Low — VAT + search fixes already in v18+ |
+| 2 | **Fix B16: employee start-date routing** | 2-4 pts | 1 line in chief.py | Low — add PLAN_PROMPT instruction |
+| 3 | **Fix B18: supplier invoice without voucherType** | 3-6 pts (bank recon) + 6 pts (standalone) | Small change in voucher.py | Medium — need to test voucherType removal |
+| 4 | **Deploy v22 + test bank recon** | Validates P1 + B18 fix | Deploy + 1 submission | Medium — untested supplier payment flow |
+| 5 | **Test ledger correction (P3)** | Up to 6 pts (T3) | 1 submission | High uncertainty — workflow never run |
+| 6 | **Test monthly closing (P2)** | 6-10 pts (T3) | 1 submission | Medium — Chief bypass working but Senior struggles with multi-voucher |
+
+**Tasks NOT worth fixing (low ROI):**
+- Receipt expenses (B10): Chief PDF timeout is structural, would need rearchitecting
+- Project lifecycle: 5-step chain, deadline pressure is the real blocker
+- Payroll (W1): Never seen again after 1 early attempt, low priority
 
 ## Tracking Files
-- `docs/tasks.csv` — 50+ competition prompts with scores, versions, analysis
+- `docs/tasks.csv` — 54+ competition prompts with scores, versions, analysis + summary section
 - `docs/add_workflows.md` — workflow backlog with priority fixes and failure analysis
 
 ## Notes
-- Competition: March 19-22, 2026 (Day 3 — ends tomorrow)
+- Competition: March 19-22, 2026 (Day 3 — LAST DAY IS TOMORROW)
 - 56 variants per task (7 languages × 8 data sets)
 - Rate limit: 10 submissions per task per day
 - Cloud Run: project ainm26osl-722, concurrency=1

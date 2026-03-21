@@ -223,7 +223,7 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     else:
         # Check for "systemgenererte" error — retry without vatType
         error_msg = str(result.get("validationMessages", result.get("message", "")))
-        if "systemgenererte" in error_msg.lower() and vat_type_id:
+        if "systemgenererte" in error_msg.lower():
             logger.warning("Voucher rejected (system-generated conflict). Retrying without vatType — splitting manually.")
             # Manual split: net on expense, VAT on 2710, credit on supplier account
             vat_amount_calc = round(amount_incl - amount_excl, 2)
@@ -246,7 +246,9 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
                     p["supplier"] = {"id": supplier_id}
 
             voucher["postings"] = manual_postings
-            logger.info("Retrying voucher with %d manual postings (no vatType)", len(manual_postings))
+            # Remove voucherType — "Leverandørfaktura" triggers system-generated posting rules
+            voucher.pop("voucherType", None)
+            logger.info("Retrying voucher with %d manual postings (no vatType, no voucherType)", len(manual_postings))
             result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
             voucher_id = result.get("value", {}).get("id")
             if voucher_id:

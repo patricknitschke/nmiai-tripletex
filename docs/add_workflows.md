@@ -29,6 +29,52 @@ See `docs/task_plan.md` → "Weakness Map by Competition Category" for full cont
 
 ## Open Enhancements
 
+### B16 (NEW): Employee Start-Date Routing — 2-4 pts
+- **Status:** BUG CONFIRMED — needs fix
+- **What:** Chief picks `create_employee` instead of `register_employment` when prompt mentions a start date WITHOUT employment contract keywords (arbeidskontrakt/tilbudsbrev).
+- **Evidence:** v19 Nathan Moreau task scored 5/7 — employee created but no employment record (startDate ignored). Schema notes have the hint but Chief's PLAN_PROMPT doesn't enforce it.
+- **Fix:** Add explicit instruction to Chief PLAN_PROMPT:
+  ```
+  - If the prompt mentions a START DATE for an employee (date de début/tiltredelse/fecha de inicio/
+    Startdatum/data de início/Anfangsdatum), ALWAYS use register_employment instead of create_employee.
+  ```
+- **File:** `src/agent/agents/chief.py` — add after line 98 (the "employment contracts" line)
+- **Impact:** Employee tasks with start dates go from 5/7 → 7/7
+
+### B18 (NEW): Supplier Invoice voucherType Conflict — blocks P1 bank recon
+- **Status:** BUG CONFIRMED — code fix exists but may not be deployed
+- **What:** voucherType "Leverandørfaktura" triggers Tripletex system-generated posting rules that conflict with our explicit postings. First attempt fails (vatType conflict), retry pops voucherType but may also fail.
+- **Evidence:** v21 bank recon — "both vatType AND manual split rejected". 4 consecutive bank recon tasks stuck at 1/2.
+- **Fix (in code at voucher.py line 250):** Already pops voucherType on retry. But need to verify:
+  1. Try WITHOUT voucherType on FIRST attempt (not just retry)
+  2. Ensure manual split amounts balance exactly
+  3. Possibly use a generic voucherType (e.g. "Manuell") instead of "Leverandørfaktura"
+- **File:** `src/agent/workflows/voucher.py` — `create_supplier_invoice()` function
+- **Impact:** Bank recon supplier payments (3-6 pts across 4 tasks) + standalone supplier invoices (6 pts)
+
+### W12: Foreign Currency Payment + Exchange Difference (disagio/agio)
+- **Status:** SEEN — 1/4, no dedicated workflow
+- **Priority:** Medium — T3 task, 4 checks × 56 variants = potentially high points
+- **API:** PUT /invoice/{id}/:payment + POST /ledger/voucher
+- **Example prompt (PT):** "Enviámos uma fatura de 19074 EUR ao Oceano Lda taxa 11.69 NOK/EUR. Cliente pagou a 11.28 NOK/EUR. Registe pagamento e lance diferença cambial (disagio)."
+- **What went wrong (v21):**
+  1. Chief timed out → no plan
+  2. Senior spent 10 iterations investigating (customer, invoices, orders, vouchers, postings) but 0 POSTs
+  3. Never registered payment or posted exchange difference
+- **What the workflow needs:**
+  1. Find existing invoice for the customer (by org number or name)
+  2. Register payment at the new exchange rate amount (19074 × 11.28 = 215,154.72 NOK)
+  3. Calculate exchange difference: (11.69 - 11.28) × 19074 = 7,820.34 NOK loss
+  4. Post disagio voucher: debit 8060 (Valutadifferanse/exchange loss), credit 1500 (AR) or let it balance via invoice
+  5. Or if agio (gain): debit 1500, credit 8060
+
+### B19 (NEW): Bank recon — undetected customer payment descriptions
+- **Status:** LOW RISK — currently working because bank CSV is always Norwegian
+- **What:** Customer payment detection requires "innbetaling" or "betaling" in description. If bank CSVs ever use non-Norwegian descriptions, customer matching would break.
+- **Evidence:** 5/5 customer payments on all 4 bank recon tasks — not currently failing.
+- **Fix:** Fall back to `amount_in > 0` as primary detection (any positive incoming amount = customer payment)
+- **Impact:** Defensive fix, no immediate point gain
+
 ### create_voucher — support balancing account
 - **Status:** TODO
 - **Priority:** Low — nice to have
@@ -85,7 +131,7 @@ See `docs/task_plan.md` → "Weakness Map by Competition Category" for full cont
 | Voucher dimension support | dimensionId field in create_voucher | v17 |
 | Slim Chief catalog | Names + notes only, no field specs | v18 |
 | STYRK extraction hint | Senior prompt lists all employment PDF fields | v19 |
-| Chief routes register_employment | When start date mentioned in prompt | v20 |
+| Chief routes register_employment | When start date mentioned in prompt | v20 (PARTIAL — schema hint exists but Chief PLAN_PROMPT doesn't enforce. See B16) |
 
 ## Completed Workflows (17 total)
 

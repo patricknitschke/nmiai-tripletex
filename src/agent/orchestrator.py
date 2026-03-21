@@ -60,15 +60,15 @@ async def _run_hybrid_mode(
         logger.info("Multi-voucher/closing task detected — skipping Chief, Senior handles directly")
         return await run_senior_accountant(prompt, files, client, deadline=deadline)
 
-    # Stage 1: Chief produces a strategic plan (30s max — PDF inputs can be slow)
+    # Stage 1: Chief produces a strategic plan (50s max — PDF inputs can be slow)
     logger.info("=" * 40)
     logger.info("HYBRID MODE: Chief planning...")
     try:
         # Don't pass files (PDFs/CSVs) to Chief — it only needs the text prompt to plan.
         # Senior gets the full files for data extraction.
-        thinking, steps = await asyncio.wait_for(chief_plan(prompt, []), timeout=30.0)
+        thinking, steps = await asyncio.wait_for(chief_plan(prompt, []), timeout=50.0)
     except asyncio.TimeoutError:
-        logger.warning("Chief planning timed out after 30s — skipping to Senior")
+        logger.warning("Chief planning timed out after 50s — skipping to Senior")
         return await run_senior_accountant(prompt, files, client, deadline=deadline)
 
     if not steps:
@@ -82,14 +82,14 @@ async def _run_hybrid_mode(
                            "please provide", "invoice number is required", "not possible"]
         if any(signal in task_text for signal in give_up_signals):
             logger.warning("Chief plan looks like giving up: '%s'. Ignoring plan, Senior will handle directly.",
-                           steps[0].get("task", "")[:200])
+                           steps[0].get("task", ""))
             return await run_senior_accountant(prompt, files, client, deadline=deadline)
 
     # Log the plan
     for i, step in enumerate(steps, 1):
         logger.info("  PLAN STEP %d: [%s] %s", i, step.get("suggested_workflow", "?"), step.get("task", ""))
     if thinking:
-        logger.info("Chief thinking: %s", thinking[:300])
+        logger.info("Chief thinking: %s", thinking)
 
     # Stage 2: Build plan preamble and let Senior execute in one loop
     plan_lines = []
