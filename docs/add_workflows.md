@@ -2,133 +2,109 @@
 
 Tracking new workflows and enhancements needed based on competition task logs.
 
-## Enhancements to Existing Workflows
+## Priority Fixes (Day 3) — Ranked by Expected Points
 
-### create_voucher — add dimension support
-- **Status:** TODO
-- **Why:** 3/6 on "Kostsenter" task — dimension created OK via raw API but voucher posting not linked to dimension
-- **Fix:** Add `freeAccountingDimension1` field to posting schema. The Posting object supports `freeAccountingDimension1/2/3` as `{id: dimensionValueId}`.
-- **Example prompt:** "Bokfør et bilag på konto 7300 for 25700 kr, knyttet til dimensjonsverdien 'IT'"
+See `docs/task_plan.md` → "Weakness Map by Competition Category" for full context.
+
+### P1: Bank Recon Supplier Payments — 3-6 pts (3 tasks)
+- **Status:** ✅ IMPLEMENTED
+- **What was done:** When no existing supplier invoice matches, workflow now auto-creates one via `create_supplier_invoice()` using supplier name extracted from CSV description (6-language regex), `amountOut` as total, default account 7300 + 25% VAT. Then immediately registers payment.
+- **Files changed:** `src/agent/workflows/bank_reconciliation.py` — added `_extract_supplier_name()` helper + auto-create logic in supplier payment block
+
+### P2: Monthly/Yearly Closing Timeout — 6-10 pts (2 tasks)
+- **Status:** ✅ IMPLEMENTED
+- **What was done:** Added keyword detection in `_run_hybrid_mode()` — 13 closing-related keywords (NO/NN/EN/ES/FR/PT/DE) skip Chief entirely, routing straight to Senior. Saves 30s+ of Chief timeout overhead.
+- **Files changed:** `src/agent/orchestrator.py` — added `_CLOSING_KEYWORDS` check before `chief_plan()` call
+
+### P3: Ledger Error Correction Workflow (W11) — up to 6 pts (1 task, T3)
+- **Status:** ✅ IMPLEMENTED
+- **What was done:** New `analyze_ledger` workflow (#18) in `src/agent/workflows/ledger_analysis.py`. Fetches all postings for a date range via `GET /ledger/posting`, groups by voucher, detects 3 error types (imbalanced vouchers, duplicate postings, orphaned VAT). Returns structured error list + voucher summaries. Senior uses `create_voucher` to post corrections.
+- **Files created:** `src/agent/workflows/ledger_analysis.py`
+- **Files changed:** `src/agent/workflows/__init__.py`, `src/agent/workflows/schemas.py`
+
+### P4: Credit Note Retest — 6-12 pts (3 tasks, T2×2)
+- **Status:** FIXES DEPLOYED, NEVER RETESTED
+- **What changed:** 9v VAT fix ("sin IVA" = excl-VAT, not 0%), B6 search-before-create for pre-existing invoices. Both deployed since v18.
+- **Action:** Just resubmit credit note tasks. No code changes needed.
+
+## Open Enhancements
 
 ### create_voucher — support balancing account
 - **Status:** TODO
+- **Priority:** Low — nice to have
 - **Why:** Voucher needs debit + credit to balance. Agent sometimes forgets the credit side.
 - **Fix:** Auto-add balancing posting to account 1920 if only one posting is provided.
 
-## New Workflows Needed
+## Open Workflows
 
 ### W1: Payroll (salary/lønn)
 - **Status:** RESEARCH NEEDED
-- **Priority:** Medium — seen in ES prompt (Fernando López payroll)
+- **Priority:** Medium — seen once (ES prompt, Fernando López)
 - **API:** Unknown — need to research salary endpoints
-- **Example prompt:** "Ejecute la nómina de Fernando López para este mes. Salario base 37850 NOK + bonificación 9200 NOK."
+- **Example:** "Ejecute la nómina de Fernando López para este mes. Salario base 37850 NOK + bonificación 9200 NOK."
 
 ### W4: Project Invoice
 - **Status:** RESEARCH NEEDED
-- **Priority:** Medium — always paired with time registration
-- **API:** Likely PUT /order/{id}/:invoice with project hours, or dedicated project invoice endpoint
-- **Example prompt:** "Gere uma fatura de projeto ao cliente com base nas horas registadas"
+- **Priority:** Medium — paired with time registration
+- **API:** Likely PUT /order/{id}/:invoice with project hours
+- **Example:** "Gere uma fatura de projeto ao cliente com base nas horas registadas"
 
-### W5: Custom Dimensions (create_dimension)
-- **Status:** OPTIONAL — agent handles via raw API
-- **Priority:** Low — agent scored 3/6 without a dedicated workflow
-- **API:** POST /ledger/accountingDimensionName + POST /ledger/accountingDimensionValue
-- **Note:** Could wrap in a workflow for reliability, but raw API approach is working
+### W11: Ledger Error Correction
+- **Status:** ✅ IMPLEMENTED as `analyze_ledger` workflow (P3)
+- **What it does:** Fetches postings → detects imbalance/duplicates/orphaned VAT → returns structured errors for Senior to correct via `create_voucher`
+- **Needs competition test** to verify scoring improvement from 0/4
 
-### W7: Bank Reconciliation (bankavsteming)
-- **Status:** SEEN — 0/2, needs dedicated workflow
-- **Priority:** High — T3 task, complex, currently 0/2
-- **API:** GET /invoice (match by customer+amount), PUT /invoice/{id}/:payment, POST /supplierInvoice/{id}/:addPayment
-- **Example prompt:** "Avstem bankutskriften (vedlagt CSV) mot åpne fakturaer i Tripletex. Match innbetalinger til kundefakturaer og utbetalinger til leverandørfakturaer. Håndter delbetalinger korrekt."
-- **What went wrong (v13):**
-  1. All customer name searches resolved to same customer ID (API returns first partial match)
-  2. All 5 payments stacked on same invoice (-65,225 overpaid)
-  3. Invoice number from CSV (1001, 1002) doesn't match Tripletex internal numbers
-  4. Never reached supplier payments or bank fees — deadline hit at 105s
-- **What the workflow needs:**
-  1. Parse CSV: separate incoming (customer payments) vs outgoing (supplier payments) vs fees
-  2. Match invoices by: invoice number first, then by customer+amount, then by amount alone
-  3. Register each payment with correct amount (partial payments = paidAmount from CSV, not full invoice)
-  4. Handle supplier outgoing payments via POST /supplierInvoice/{id}/:addPayment
-  5. Handle bank fees via create_voucher (debit 7770 Bankgebyr, credit 1920)
-  6. Must be fast — process all rows in one workflow call, not one-by-one via LLM loop
+## Open Investigations
 
-### W9: Employment Contract Registration (arbeidskontrakt)
-- **Status:** SEEN — 7/15, needs dedicated workflow
-- **Priority:** High — T3 task, 15 checks = high point value
-- **API:** POST /employee, POST /employee/employment, POST /employee/employment/details, salary endpoints
-- **Example prompt:** "Has recibido un contrato de trabajo (PDF). Crea el empleado con todos los datos: numero de identidad, departamento, codigo de ocupacion, salario, porcentaje de empleo y fecha de inicio."
-- **What went wrong (v15):**
-  1. Employee created with wrong department (existing default, not the contract's "Regnskap")
-  2. Department created AFTER employee — never re-linked
-  3. Agent spiraled 8 iterations on lookup_api searching for employment/salary endpoints, never made the call
-  4. No employment record (STYRK code, start date, percentage)
-  5. No salary record
-- **What the workflow needs:**
-  1. Create department first (if specified in contract)
-  2. Create employee linked to that department
-  3. POST /employee/employment with: startDate, occupationCode (STYRK), percentage, employeeId
-  4. POST salary endpoint with: annualSalary, paymentType
-  5. All in one workflow call from the PDF-extracted data
+### Reminder fee posting to account 1500
+- **Status:** INVESTIGATE — 4/6 without fix
+- **Issue:** Account 1500 (Kundefordringer/AR) is system-managed, can't be posted to via voucher
+- **Theory:** Reminder invoice auto-posts to 1500, making separate voucher redundant
 
-### B9: Employee workflow ignores specified department
-- **Status:** TODO — quick fix
-- **Priority:** High — affects all employee tasks where department is specified
-- **Symptom:** Employee always linked to first `count=1` department, not the one just created or specified in the prompt
-- **Root cause:** `create_employee` workflow fetches `GET /department?count=1` and uses whatever comes back, ignoring any `departmentId` or `departmentName` passed in the data
-- **Seen in:** Carmen Pérez (Regnskap → wrong dept), Rita Almeida (Drift → wrong dept)
-- **Fix:** Check if data contains `departmentId` or `departmentName`, resolve to ID, and use that instead of the default first department
+### Voucher "systemgenererte" error
+- **Status:** SAFETY NET ADDED (v20)
+- **What:** When vatType on a posting triggers system-generated conflict, supplier invoice workflow retries with manual 3-posting split (net + VAT + credit). create_voucher logs clear warning.
+- **Root cause:** Setting vatType on a posting makes Tripletex auto-generate VAT postings that conflict with explicit postings.
 
-### B10: Chief LLM call timeout on PDF/image inputs
-- **Status:** TODO — quick fix
-- **Priority:** Critical — causes 0/X on any PDF task where Chief takes >60s
-- **Symptom:** Chief planning call takes 146s on PDF receipt, Senior gets 0 iterations
-- **Root cause:** No timeout on the Chief `complete()` call. gemini-3.1-pro-preview is slow on multimodal
-- **Seen in:** Oppbevaringsboks receipt (151.8s total, 0 API calls)
-- **Fix:** Add timeout to Chief planning (e.g., 30s max). If Chief times out, skip plan and let Senior work from scratch with the full 100s
+## Fixed (remove from active tracking)
 
-### B7: Proxy Token Expiry on Long Tasks
-- **Status:** INVESTIGATE
-- **Priority:** High — kills any task that takes >60s if concurrent tasks share the token
-- **Symptom:** All API calls return 403 "Invalid or expired proxy token"
-- **Possible cause:** Cloud Run concurrency >1, or tasks running too long
-- **Fix options:** Set Cloud Run max-instances/concurrency to 1, or detect 403 and bail early
+| Item | Fix | Version |
+|------|-----|---------|
+| B7: Proxy token expiry | concurrency=1 on Cloud Run | v15 |
+| B8: Chief plan truncation | max_tokens=8192 + max 5 steps | v17 |
+| B9: Employee wrong department | Resolve departmentName in workflow | v17 |
+| B10: Chief PDF timeout | 30s timeout + skip files for Chief | v17/v18 |
+| B11: Wrong input VAT type | Case-insensitive + exclude wrong direction | v18 |
+| B12: HTML 404 crash | try/except in TripletexClient | v18 |
+| B13: Chief receives PDFs | Skip files in chief_plan() | v18 |
+| B14: 429 rate limit crash | Retry with backoff (3 attempts) | v19 |
+| W7: Bank reconciliation | Built workflow with CSV parsing + amount matching | v18 |
+| W8: Supplier payment in bank recon | Code exists (detection + POST endpoint) but **broken in competition** — see P1 above. Fresh accounts have no supplier invoices to match | v20 (incomplete) |
+| W9: Employment contract | register_employment workflow (4 steps) | v17 |
+| W10: Receipt expense | register_expense workflow with dept + VAT | v17 |
+| Voucher dimension support | dimensionId field in create_voucher | v17 |
+| Slim Chief catalog | Names + notes only, no field specs | v18 |
+| STYRK extraction hint | Senior prompt lists all employment PDF fields | v19 |
+| Chief routes register_employment | When start date mentioned in prompt | v20 |
 
-### W8: Supplier Payment
-- **Status:** NOT SEEN YET
-- **Priority:** Low — may appear in T3
-- **API:** POST /supplierInvoice/{invoiceId}/:addPayment
+## Completed Workflows (17 total)
 
-### W11: Ledger Error Correction (corrective entries)
-- **Status:** SEEN — 0/4, needs dedicated workflow
-- **Priority:** Medium — T3 task, 4 checks
-- **API:** GET /ledger/voucher + GET /ledger/posting + POST /ledger/voucher (corrective)
-- **Example prompt (FR):** "Nous avons découvert des erreurs dans le grand livre... une écriture sur le mauvais compte (6500 au lieu de 6540, 6800 NOK), une pièce en double (7000, 1300 NOK), une ligne de TVA manquante (4300, 17300 NOK HT), et un montant incorrect (6300, 10150 au lieu de 7450 NOK). Corrigez avec des écritures correctives."
-- **What went wrong (v17):**
-  1. Chief timed out on complex French prompt (no PDF, just long reasoning needed)
-  2. Senior fetched each voucher twice (without fields, then with fields=*) — wasted 40s
-  3. Never created any corrective entries — ran out of time after 3 iterations of reading
-- **What the workflow needs:**
-  1. Accept a list of errors: {type: "wrong_account"|"duplicate"|"missing_vat"|"wrong_amount", account, amount, correctAccount, correctAmount}
-  2. Search voucher postings by account + amount to find the erroneous entry
-  3. Create corrective voucher: reverse original posting + post correct one
-  4. Handle 4 error types: wrong account → repost to correct account, duplicate → reverse it, missing VAT → add VAT posting, wrong amount → reverse + repost correct amount
-
-## Completed Workflows (14 total)
-
-| Workflow | Phase | Task Types |
-|----------|-------|------------|
-| create_employee | T1 | Employee creation |
-| create_customer | T1 | Customer + supplier creation |
+| Workflow | Tier | What it does |
+|----------|------|-------------|
+| create_employee | T1 | Employee + dept resolution + name/email search |
+| create_customer | T1 | Customer/supplier + address + dedup |
 | create_department | T1 | Department creation |
-| create_product | T1 | Product creation |
+| create_product | T1 | Product with VAT type |
 | create_order | T1 | Order creation |
 | create_invoice | T1 | Invoice (auto-creates customer, products, VAT) |
-| register_payment | T2 | Payment registration (self-contained, searches invoice) |
-| create_credit_note | T2 | Credit notes (self-contained, searches invoice) |
-| create_travel_expense | T2 | Travel expenses + per diem |
-| delete_travel_expense | T2 | Delete travel expense by ID/employee/title |
-| create_project | T2 | Project creation (resolves customer + PM) |
-| create_supplier_invoice | T3 | Supplier invoices via voucher (debit/credit postings) |
-| create_voucher | T3 | Manual journal entries |
-| register_time | T3 | Timesheet hours registration |
+| register_payment | T2 | Self-contained: finds invoice, uses actual amount |
+| create_credit_note | T2 | Self-contained: finds invoice, creates if needed |
+| create_travel_expense | T2 | Travel + per diem + costs |
+| delete_travel_expense | T2 | Delete by ID/employee/title |
+| create_project | T2 | Project + customer/PM resolution |
+| create_supplier_invoice | T3 | Voucher with debit/credit + input VAT + retry |
+| create_voucher | T3 | Manual journal entries + dimension support |
+| register_time | T3 | Timesheet hours on project activity |
+| register_employment | T3 | Full contract: employee + dept + employment + salary + hours |
+| reconcile_bank_statement | T3 | CSV parser, invoice matching, customer + supplier payments |
+| register_expense | T3 | Receipt → voucher with department + input VAT |

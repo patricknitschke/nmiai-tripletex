@@ -16,7 +16,9 @@ TASK_SCHEMAS: dict[str, dict] = {
         "notes": (
             "department.id is required but will be auto-resolved by the workflow. "
             "userType defaults to STANDARD. "
-            "If the prompt mentions admin/administrator role, set role to 'administrator'."
+            "If the prompt mentions admin/administrator role, set role to 'administrator'. "
+            "IMPORTANT: If the prompt includes a START DATE (date de début/tiltredelse/fecha de inicio/Startdatum), "
+            "use register_employment instead — it handles employee + employment record + start date in one call."
         ),
         "fields": [
             {"name": "firstName", "type": "string", "required": True, "description": "First name"},
@@ -328,6 +330,21 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "departmentName", "type": "string", "required": False, "description": "Department to allocate expense to"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Receipt/expense date"},
             {"name": "supplierName", "type": "string", "required": False, "description": "Who issued the receipt (e.g. 'Biltema')"},
+        ],
+    },
+    "analyze_ledger": {
+        "api_endpoint": "GET /ledger/posting",
+        "notes": (
+            "Analyzes ledger postings for a date range and detects accounting errors: imbalanced vouchers, "
+            "duplicate postings, orphaned VAT entries. Returns structured error list with voucher summaries. "
+            "Use this FIRST for ledger correction tasks, then use create_voucher to post corrective entries. "
+            "For error correction (retting/correction/Korrektur/correction/correção): analyze_ledger → create_voucher."
+        ),
+        "fields": [
+            {"name": "dateFrom", "type": "string (YYYY-MM-DD)", "required": False, "description": "Start date for analysis (default: Jan 1 current year)"},
+            {"name": "dateTo", "type": "string (YYYY-MM-DD)", "required": False, "description": "End date for analysis (default: Feb 28 current year)"},
+            {"name": "accountFrom", "type": "integer", "required": False, "description": "Optional: only analyze accounts from this number"},
+            {"name": "accountTo", "type": "integer", "required": False, "description": "Optional: only analyze accounts up to this number"},
         ],
     },
 }

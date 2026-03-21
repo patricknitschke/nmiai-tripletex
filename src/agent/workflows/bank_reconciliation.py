@@ -1,11 +1,53 @@
 import csv
 import io
 import logging
+import re
 from datetime import date
 
 from ..tripletex import TripletexClient
+from .voucher import create_supplier_invoice
 
 logger = logging.getLogger("agent.workflows.bank_reconciliation")
+
+# Multilingual supplier keyword prefixes used to extract supplier name from descriptions
+_SUPPLIER_PREFIXES = [
+    r"betaling\s+leverand(?:ør|or)\s+",
+    r"leverand(?:ør|or)(?:betaling)?\s+",
+    r"zahlung\s+lieferant\s+",
+    r"lieferant\s+",
+    r"pago\s+proveedor\s+",
+    r"proveedor\s+",
+    r"paiement\s+fournisseur\s+",
+    r"fournisseur\s+",
+    r"pagamento\s+fornecedor\s+",
+    r"fornecedor\s+",
+    r"supplier\s+payment\s+",
+    r"payment\s+supplier\s+",
+    r"supplier\s+",
+]
+
+
+def _extract_supplier_name(description: str) -> str:
+    """Extract supplier name from a bank statement description.
+
+    Examples:
+        'Betaling Leverandør Polaris AS' -> 'Polaris AS'
+        'Zahlung Lieferant Berg GmbH - faktura 123' -> 'Berg GmbH'
+        'Proveedor Montaña SL' -> 'Montaña SL'
+    """
+    text = description.strip()
+    for prefix in _SUPPLIER_PREFIXES:
+        m = re.match(prefix, text, re.IGNORECASE)
+        if m:
+            text = text[m.end():].strip()
+            break
+    # Strip trailing invoice/reference info after common separators
+    for sep in [" - ", " – ", " — ", " faktura ", " inv ", " invoice "]:
+        idx = text.lower().find(sep)
+        if idx > 0:
+            text = text[:idx].strip()
+            break
+    return text or description.strip()
 
 
 def _parse_csv(csv_text: str) -> list[dict]:
@@ -141,6 +183,10 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
     all_invoices = await _get_all_invoices(client)
     logger.info("Fetched %d customer invoices for matching", len(all_invoices))
 
+    # Pre-fetch supplier invoices for outgoing payment matching
+    all_supplier_invoices = await _get_all_supplier_invoices(client)
+    logger.info("Fetched %d supplier invoices for matching", len(all_supplier_invoices))
+
     # Cache payment type
     pt_result = await client.get("/invoice/paymentType", params={"count": "1"})
     payment_types = pt_result.get("values", [])
@@ -148,6 +194,7 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
 
     # Track which invoices we've already paid
     paid_invoice_ids = set()
+    paid_supplier_ids = set()
 
     for row in rows:
         desc = row.get("description", "")
@@ -210,9 +257,78 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
 
         # Type 2: Supplier payment (Betaling Leverandør/Lieferant/fournisseur)
         elif amount_out > 0 and is_supplier:
-            # For now, log as skipped — supplier invoice payment needs supplierInvoice ID
-            logger.warning("Supplier payment not yet supported: %s (%.2f)", desc, amount_out)
-            results["skipped"].append({"description": desc, "amount": amount_out, "reason": "supplier payment not implemented"})
+            # Match by amount to an open supplier invoice
+            matched_si = None
+            for si in all_supplier_invoices:
+                si_id = si.get("id")
+                if si_id in paid_supplier_ids:
+                    continue
+                si_amount = si.get("amount", 0)
+                if abs(si_amount - amount_out) < 0.01:
+                    matched_si = si
+                    break
+
+            # If no exact match, find any unpaid supplier invoice
+            if not matched_si:
+                for si in all_supplier_invoices:
+                    si_id = si.get("id")
+                    if si_id in paid_supplier_ids:
+                        continue
+                    si_amount = si.get("amount", 0)
+                    if si_amount > 0:
+                        matched_si = si
+                        break
+
+            if not matched_si:
+                # No supplier invoice exists — create one from CSV data, then pay it
+                supplier_name = _extract_supplier_name(desc)
+                logger.info("No existing supplier invoice for %.2f — creating for '%s'", amount_out, supplier_name)
+                si_data = {
+                    "supplierName": supplier_name,
+                    "amountInclVat": amount_out,
+                    "expenseAccount": 7300,
+                    "vatRate": 25,
+                    "description": desc,
+                    "date": tx_date,
+                }
+                si_result = await create_supplier_invoice(si_data, client)
+                new_si_id = si_result.get("value", {}).get("id")
+                if new_si_id:
+                    logger.info("Created supplier invoice %d for '%s'", new_si_id, supplier_name)
+                    # Fetch the newly created voucher to find the supplier invoice reference
+                    # The voucher itself IS the supplier invoice in Tripletex
+                    matched_si = {"id": new_si_id, "amount": amount_out}
+                    # Also look up if a proper supplier invoice was created
+                    fresh_sis = await _get_all_supplier_invoices(client)
+                    for si in fresh_sis:
+                        if si.get("id") not in paid_supplier_ids:
+                            si_amount = si.get("amount", 0)
+                            if abs(si_amount - amount_out) < 0.01:
+                                matched_si = si
+                                break
+                else:
+                    logger.error("Failed to create supplier invoice for '%s': %s", supplier_name, si_result)
+                    results["errors"].append({"description": desc, "error": f"Failed to create supplier invoice: {si_result}"})
+
+            if matched_si:
+                si_id = matched_si["id"]
+                pay_params = {
+                    "invoiceId": str(si_id),
+                    "paymentType": "0",
+                    "amount": str(amount_out),
+                    "paymentDate": tx_date,
+                    "useDefaultPaymentType": "true",
+                }
+                result = await client.post(f"/supplierInvoice/{si_id}/:addPayment", params=pay_params)
+                if result.get("value") or result.get("id") or (isinstance(result.get("status"), int) and result["status"] < 400):
+                    paid_supplier_ids.add(si_id)
+                    logger.info("Registered supplier payment %.2f on supplier invoice %d", amount_out, si_id)
+                    results["payments_registered"].append({
+                        "type": "supplier", "invoice": si_id, "amount": amount_out, "date": tx_date
+                    })
+                else:
+                    logger.error("Failed to register supplier payment on invoice %d: %s", si_id, result)
+                    results["errors"].append({"description": desc, "error": str(result)})
 
         # Type 3: Bank fee / interest
         elif "bankgebyr" in desc_lower or "rente" in desc_lower or "gebyr" in desc_lower:

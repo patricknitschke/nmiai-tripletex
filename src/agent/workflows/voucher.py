@@ -221,7 +221,40 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     if voucher_id:
         logger.info("Voucher created with ID: %d", voucher_id)
     else:
-        logger.error("Failed to create voucher: %s", result)
+        # Check for "systemgenererte" error — retry without vatType
+        error_msg = str(result.get("validationMessages", result.get("message", "")))
+        if "systemgenererte" in error_msg.lower() and vat_type_id:
+            logger.warning("Voucher rejected (system-generated conflict). Retrying without vatType — splitting manually.")
+            # Manual split: net on expense, VAT on 2710, credit on supplier account
+            vat_amount_calc = round(amount_incl - amount_excl, 2)
+            manual_postings = [
+                {"date": voucher_date, "description": description, "amountGross": amount_excl},
+                {"date": voucher_date, "description": f"MVA {description}", "amountGross": vat_amount_calc},
+                {"date": voucher_date, "description": description, "amountGross": -amount_incl},
+            ]
+            if expense_account_id:
+                manual_postings[0]["account"] = {"id": expense_account_id}
+            # Resolve VAT account 2710
+            vat_acct = await client.get("/ledger/account", params={"number": "2710", "count": "1"})
+            vat_accounts = vat_acct.get("values", [])
+            if vat_accounts:
+                manual_postings[1]["account"] = {"id": vat_accounts[0]["id"]}
+            if supplier_account_id:
+                manual_postings[2]["account"] = {"id": supplier_account_id}
+            if supplier_id:
+                for p in manual_postings:
+                    p["supplier"] = {"id": supplier_id}
+
+            voucher["postings"] = manual_postings
+            logger.info("Retrying voucher with %d manual postings (no vatType)", len(manual_postings))
+            result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
+            voucher_id = result.get("value", {}).get("id")
+            if voucher_id:
+                logger.info("Voucher created on retry with ID: %d", voucher_id)
+            else:
+                logger.error("Voucher retry also failed: %s", result)
+        else:
+            logger.error("Failed to create voucher: %s", result)
 
     return result
 
@@ -283,6 +316,9 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
     if voucher_id:
         logger.info("Manual voucher created with ID: %d", voucher_id)
     else:
+        error_msg = str(result.get("validationMessages", result.get("message", "")))
+        if "systemgenererte" in error_msg.lower():
+            logger.warning("Voucher rejected (system-generated account conflict). This account may require posting via invoice/payment workflows instead.")
         logger.error("Failed to create manual voucher: %s", result)
 
     return result

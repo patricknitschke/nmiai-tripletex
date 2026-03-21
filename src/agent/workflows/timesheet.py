@@ -152,7 +152,7 @@ async def register_time(data: dict, client: TripletexClient) -> dict:
 
     logger.info("Registering %s hours on project %d, activity %d, employee %d (date=%s)",
                 hours, project_id, activity_id, employee_id, entry_date)
-    result = await client.post("/timesheet/entry", json=entry)
+    result = await client.post("/timesheet/entry", entry)
 
     entry_id = result.get("value", {}).get("id")
     if entry_id:
