@@ -9,6 +9,26 @@ from .voucher import create_supplier_invoice
 
 logger = logging.getLogger("agent.workflows.bank_reconciliation")
 
+
+# ---------------------------------------------------------------------------
+# Pagination helper
+# ---------------------------------------------------------------------------
+
+async def _fetch_all_pages(client: TripletexClient, endpoint: str, params: dict, page_size: int = 1000) -> list:
+    """Fetch all records from a paginated Tripletex endpoint."""
+    all_values = []
+    offset = 0
+    while True:
+        page_params = {**params, "count": str(page_size), "from": str(offset)}
+        result = await client.get(endpoint, params=page_params)
+        values = result.get("values", [])
+        all_values.extend(values)
+        if len(values) < page_size:
+            break
+        offset += page_size
+    return all_values
+
+
 # ---------------------------------------------------------------------------
 # Description parsing helpers
 # ---------------------------------------------------------------------------
@@ -85,8 +105,17 @@ def _extract_invoice_ref(description: str) -> str | None:
 
 
 def _normalize_date(raw: str) -> str:
-    """Convert DD.MM.YYYY or DD/MM/YYYY to YYYY-MM-DD. Pass through if already ISO."""
+    """Convert DD.MM.YYYY, DD/MM/YYYY, or ISO with time component to YYYY-MM-DD.
+    
+    Assumes European day-first format for DD.MM and DD/MM patterns.
+    ISO-like formats (YYYY-MM-DD...) are truncated to date-only.
+    """
     raw = raw.strip()
+    # Already ISO with optional time component: 2025-03-04T... or 2025-03-04 10:...
+    iso_m = re.match(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if iso_m:
+        return f"{iso_m.group(1)}-{iso_m.group(2)}-{iso_m.group(3)}"
+    # European: DD.MM.YYYY or DD/MM/YYYY
     m = re.match(r"(\d{1,2})[./](\d{1,2})[./](\d{4})", raw)
     if m:
         return f"{m.group(3)}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}"
@@ -143,12 +172,18 @@ def _normalize_rows(parsed: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _classify(desc: str, amount_in: float, amount_out: float) -> str:
-    """Classify a bank row. Returns 'customer'|'supplier'|'fee'|'interest'|'unknown'."""
+    """Classify a bank row.
+    
+    Returns: 'customer'|'supplier'|'fee'|'interest_income'|'interest_expense'|'unknown'.
+    """
     dl = desc.lower()
     if any(kw in dl for kw in _FEE_KEYWORDS):
         return "fee"
     if any(kw in dl for kw in _INTEREST_KEYWORDS):
-        return "interest"
+        # Differentiate income vs expense based on money direction
+        if amount_in > 0:
+            return "interest_income"
+        return "interest_expense"
     if amount_out > 0 and any(kw in dl for kw in _SUPPLIER_KEYWORDS):
         return "supplier"
     if amount_in > 0:
@@ -191,15 +226,7 @@ def _match_customer_invoice(amount: float, desc: str, invoices: list[dict]) -> d
             if customer_name in _customer_name_of(inv) and abs(o - amount) < 0.01:
                 return inv
 
-    # Pass 3: exact amount
-    for inv in invoices:
-        o = _outstanding(inv)
-        if o <= 0:
-            continue
-        if abs(o - amount) < 0.01:
-            return inv
-
-    # Pass 4: customer name + any unpaid (partial payment)
+    # Pass 3: customer name + any unpaid (partial payment)
     if customer_name:
         for inv in invoices:
             if _outstanding(inv) <= 0:
@@ -207,10 +234,12 @@ def _match_customer_invoice(amount: float, desc: str, invoices: list[dict]) -> d
             if customer_name in _customer_name_of(inv):
                 return inv
 
-    # Pass 5: any invoice with enough outstanding
+    # Pass 4: exact amount (only if no name-based match found)
     for inv in invoices:
         o = _outstanding(inv)
-        if o >= amount > 0:
+        if o <= 0:
+            continue
+        if abs(o - amount) < 0.01:
             return inv
 
     return None
@@ -248,7 +277,6 @@ async def _pay_customer_invoice(
 ) -> dict:
     """Register a payment on a customer invoice."""
     return await client.put(f"/invoice/{inv_id}/:payment", params={
-        "id": str(inv_id),
         "paymentDate": tx_date,
         "paymentTypeId": str(payment_type_id),
         "paidAmount": str(amount),
@@ -260,7 +288,6 @@ async def _pay_supplier_invoice(
 ) -> dict:
     """Register a payment on a supplier invoice."""
     return await client.post(f"/supplierInvoice/{si_id}/:addPayment", params={
-        "invoiceId": str(si_id),
         "paymentType": "0",
         "amount": str(amount),
         "paymentDate": tx_date,
@@ -268,23 +295,72 @@ async def _pay_supplier_invoice(
     })
 
 
+async def _detect_vat_rate(description: str) -> int:
+    """Detect likely VAT rate from transaction description.
+    
+    Returns 0, 12, 15, or 25 based on keywords.
+    Norwegian context: 25% general, 15% food, 12% transport, 0% exempt.
+    """
+    dl = description.lower()
+    # Transport/travel keywords → 12%
+    if any(kw in dl for kw in ("transport", "fly", "flight", "taxi", "buss", "bus", "tog", "train", "billett", "ticket", "reise")):
+        return 12
+    # Food/accommodation keywords → 15%
+    if any(kw in dl for kw in ("mat", "food", "kantine", "hotell", "hotel", "overnatting", "catering")):
+        return 15
+    # Default to 25% for general services/goods
+    return 25
+
+
+def _detect_expense_account(description: str) -> str:
+    """Detect likely expense account from transaction description.
+    
+    Returns standard Norwegian chart-of-accounts number.
+    """
+    dl = description.lower()
+    # Rent / lease → 6300
+    if any(kw in dl for kw in ("leie", "husleie", "rent", "miete", "alquiler", "loyer")):
+        return "6300"
+    # IT / software → 6540
+    if any(kw in dl for kw in ("software", "lisens", "license", "it-", "data", "hosting", "sky", "cloud")):
+        return "6540"
+    # Advertising / marketing → 7330
+    if any(kw in dl for kw in ("reklame", "annonse", "marketing", "werbung", "publicidad")):
+        return "7330"
+    # Travel → 7140
+    if any(kw in dl for kw in ("reise", "travel", "fly", "flight", "hotell", "hotel")):
+        return "7140"
+    # Goods / inventory → 4300
+    if any(kw in dl for kw in ("varer", "goods", "lager", "inventory", "innkjøp", "purchase", "material")):
+        return "4300"
+    # Default: external services → 7300
+    return "7300"
+
+
 async def _post_supplier_bank_payment(
     amount_incl: float, tx_date: str, supplier_name: str,
-    client: TripletexClient,
+    description: str, client: TripletexClient,
 ) -> bool:
     """Post direct supplier bank payment as a voucher (fallback).
 
     3 postings without vatType to avoid systemgenererte conflicts:
-      Debit  7300 (expense)   amount excl VAT
+      Debit  <expense> (expense)   amount excl VAT
       Debit  2710 (input VAT) VAT amount
       Credit 1920 (bank)      total incl VAT
+    
+    VAT rate and expense account are detected from description.
     """
-    vat_rate = 25
+    vat_rate = await _detect_vat_rate(description)
+    expense_acct = _detect_expense_account(description)
     amount_excl = round(amount_incl / (1 + vat_rate / 100), 2)
     vat_amount = round(amount_incl - amount_excl, 2)
 
+    acct_numbers = [expense_acct, "1920"]
+    if vat_amount > 0:
+        acct_numbers.append("2710")
+
     accounts = {}
-    for num in ("7300", "2710", "1920"):
+    for num in acct_numbers:
         result = await client.get("/ledger/account", params={"number": num, "count": "1"})
         vals = result.get("values", [])
         if vals:
@@ -295,12 +371,17 @@ async def _post_supplier_bank_payment(
 
     postings = [
         {"date": tx_date, "description": f"{supplier_name} (expense)",
-         "amountGross": amount_excl, "account": {"id": accounts["7300"]}},
-        {"date": tx_date, "description": f"{supplier_name} (input VAT 25%)",
-         "amountGross": vat_amount, "account": {"id": accounts["2710"]}},
+         "amountGross": amount_excl, "account": {"id": accounts[expense_acct]}},
+    ]
+    if vat_amount > 0:
+        postings.append(
+            {"date": tx_date, "description": f"{supplier_name} (input VAT {vat_rate}%)",
+             "amountGross": vat_amount, "account": {"id": accounts["2710"]}},
+        )
+    postings.append(
         {"date": tx_date, "description": f"{supplier_name} (bank)",
          "amountGross": -amount_incl, "account": {"id": accounts["1920"]}},
-    ]
+    )
     voucher = {"date": tx_date, "description": f"Supplier payment: {supplier_name}", "postings": postings}
 
     result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
@@ -313,7 +394,7 @@ async def _post_supplier_bank_payment(
             await client.put(f"/ledger/voucher/{vid}/:sendToLedger")
 
     if vid:
-        logger.info("Supplier bank payment voucher id=%d", vid)
+        logger.info("Supplier bank payment voucher id=%d (acct=%s, VAT=%d%%)", vid, expense_acct, vat_rate)
         return True
     logger.error("Supplier bank payment failed: %s", result)
     return False
@@ -325,13 +406,16 @@ async def _post_fee_or_interest_voucher(
 ) -> bool:
     """Post a bank fee or interest voucher.
 
-    Fee:      Debit 7770 (bankgebyr)      / Credit 1920 (bank)
-    Interest: Debit 1920 (bank)           / Credit 8040 (renteinntekt)
+    Fee:              Debit 7770 (bankgebyr)        / Credit 1920 (bank)
+    Interest income:  Debit 1920 (bank)             / Credit 8040 (renteinntekt)
+    Interest expense: Debit 8150 (rentekostnad)     / Credit 1920 (bank)
     """
     if tx_type == "fee":
         debit_acct, credit_acct = "7770", "1920"
-    else:
+    elif tx_type == "interest_income":
         debit_acct, credit_acct = "1920", "8040"
+    else:  # interest_expense
+        debit_acct, credit_acct = "8150", "1920"
 
     accounts = {}
     for num in (debit_acct, credit_acct):
@@ -396,13 +480,13 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
     logger.info("Processing %d bank statement rows", len(rows))
 
     # --- Pre-fetch all data (GETs are free) ---
-    all_invoices = (await client.get("/invoice", params={
-        "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2099-12-31", "count": "1000",
-    })).get("values", [])
+    all_invoices = await _fetch_all_pages(client, "/invoice", params={
+        "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2099-12-31",
+    })
 
-    all_supplier_invoices = (await client.get("/supplierInvoice", params={
-        "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2099-12-31", "count": "1000",
-    })).get("values", [])
+    all_supplier_invoices = await _fetch_all_pages(client, "/supplierInvoice", params={
+        "invoiceDateFrom": "2000-01-01", "invoiceDateTo": "2099-12-31",
+    })
 
     pt_result = await client.get("/invoice/paymentType", params={"count": "1"})
     payment_type_id = (pt_result.get("values") or [{}])[0].get("id")
@@ -480,7 +564,7 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                 else:
                     # Fallback: direct bank payment voucher
                     logger.warning("Supplier invoice creation failed — falling back to direct voucher")
-                    success = await _post_supplier_bank_payment(amount_out, tx_date, supplier_name, client)
+                    success = await _post_supplier_bank_payment(amount_out, tx_date, supplier_name, desc, client)
                     if success:
                         results["payments_registered"].append(
                             {"type": "supplier_direct", "description": supplier_name,
@@ -490,8 +574,13 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                                                   "error": "Failed to post supplier payment"})
 
         # ----- BANK FEE / INTEREST -----
-        elif tx_type in ("fee", "interest"):
-            amount = amount_out if amount_out > 0 else amount_in
+        elif tx_type in ("fee", "interest_income", "interest_expense"):
+            if tx_type == "interest_income":
+                amount = amount_in
+            elif tx_type == "interest_expense":
+                amount = amount_out
+            else:  # fee
+                amount = amount_out if amount_out > 0 else amount_in
             success = await _post_fee_or_interest_voucher(amount, tx_date, desc, tx_type, client)
             if success:
                 results["fees_posted"].append(

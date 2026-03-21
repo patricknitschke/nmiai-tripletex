@@ -74,7 +74,8 @@ async def _get_per_diem_rate_and_category(client: TripletexClient) -> tuple[int 
 
 
 async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
-    """Create a travel expense with optional cost lines and per diem."""
+    """Create a travel expense with optional cost lines and per diem — single POST with nested arrays."""
+    import asyncio
 
     # Step 1: Resolve employee
     employee_id = await _resolve_employee_id(data, client)
@@ -82,7 +83,7 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
         logger.error("No employee found for travel expense")
         return {"error": "No employee available"}
 
-    # Step 2: Create travel expense header
+    # Step 2: Build main payload with nested sub-items
     payload = {
         "employee": {"id": employee_id},
         "title": data.get("title", data.get("description", "Reise")),
@@ -97,12 +98,14 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
     if data.get("isChargeable") is not None:
         payload["isChargeable"] = data["isChargeable"]
 
-    # Build travelDetails with departure/return dates (required for per diem)
     per_diem = data.get("perDiem")
+    costs = data.get("costs", data.get("costLines", []))
     travel_date = data.get("date") or _date.today().isoformat()
     departure_date = data.get("departureDate") or travel_date
     days = per_diem.get("days", 1) if per_diem else 1
-    return_date = data.get("returnDate") or (_date.fromisoformat(departure_date) + timedelta(days=max(days - 1, 0))).isoformat()
+    return_date = data.get("returnDate") or (
+        _date.fromisoformat(departure_date) + timedelta(days=max(days - 1, 0))
+    ).isoformat()
 
     payload["travelDetails"] = {
         "departureDate": departure_date,
@@ -111,100 +114,84 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
         "returnTime": data.get("returnTime", "18:00"),
     }
 
-    logger.info("Creating travel expense: '%s' for employee %d (departure=%s return=%s)", payload["title"], employee_id, departure_date, return_date)
+    # Parallel lookups for payment type + per diem rates (GETs are free)
+    payment_type_coro = _get_default_payment_type_id(client) if costs else None
+    rate_coro = _get_per_diem_rate_and_category(client) if per_diem else None
+
+    payment_type_id = None
+    rate_id, category_id = None, None
+
+    coros = {}
+    if payment_type_coro:
+        coros["payment"] = payment_type_coro
+    if rate_coro:
+        coros["rate"] = rate_coro
+
+    if coros:
+        results = await asyncio.gather(*coros.values())
+        keys = list(coros.keys())
+        for i, key in enumerate(keys):
+            if key == "payment":
+                payment_type_id = results[i]
+            elif key == "rate":
+                rate_id, category_id = results[i]
+
+    # Build nested per diem compensations
+    if per_diem:
+        daily_rate = per_diem.get("dailyRate", 0)
+        pd_item = {
+            "count": days,
+            "rate": daily_rate,
+            "amount": days * daily_rate,
+            "overnightAccommodation": "HOTEL",
+            "location": data.get("title", ""),
+        }
+        if rate_id:
+            pd_item["rateType"] = {"id": rate_id}
+        if category_id:
+            pd_item["rateCategory"] = {"id": category_id}
+        payload["perDiemCompensations"] = [pd_item]
+
+    # Build nested cost lines
+    if costs:
+        cost_items = []
+        for cost in costs:
+            cost_date = cost.get("date") or data.get("date") or _date.today().isoformat()
+            item = {
+                "date": cost_date,
+                "amountCurrencyIncVat": cost.get("amountCurrencyIncVat", cost.get("amount", 0)),
+            }
+            if payment_type_id:
+                item["paymentType"] = {"id": payment_type_id}
+            desc = cost.get("comments", cost.get("description", ""))
+            if desc:
+                item["comments"] = desc
+            if cost.get("vatTypeId"):
+                item["vatType"] = {"id": cost["vatTypeId"]}
+            if cost.get("currencyId"):
+                item["currency"] = {"id": cost["currencyId"]}
+            cost_items.append(item)
+        payload["costs"] = cost_items
+
+    logger.info("Creating travel expense: '%s' for employee %d", payload["title"], employee_id)
     result = await client.post("/travelExpense", payload)
 
     expense_id = result.get("value", {}).get("id")
     if not expense_id:
         logger.error("Failed to create travel expense: %s", result)
-        return result
+    else:
+        logger.info("Travel expense created with ID: %d", expense_id)
 
-    logger.info("Travel expense created with ID: %d", expense_id)
-
-    errors = []
-
-    # Step 3: Resolve payment type for cost lines
-    costs = data.get("costs", data.get("costLines", []))
-    per_diem = data.get("perDiem")
-    payment_type_id = None
-    if costs:
-        payment_type_id = await _get_default_payment_type_id(client)
-
-    # Step 4: Add per diem as proper perDiemCompensation (not a cost line)
-    if per_diem:
-        daily_rate = per_diem.get("dailyRate", 0)
-        total = days * daily_rate
-
-        rate_id, category_id = await _get_per_diem_rate_and_category(client)
-
-        per_diem_payload = {
-            "travelExpense": {"id": expense_id},
-            "count": days,
-            "rate": daily_rate,
-            "amount": total,
-            "overnightAccommodation": "HOTEL",
-            "location": data.get("title", ""),
-        }
-        if rate_id:
-            per_diem_payload["rateType"] = {"id": rate_id}
-        if category_id:
-            per_diem_payload["rateCategory"] = {"id": category_id}
-
-        logger.info("Adding per diem compensation to expense %d: %d days × %s = %s", expense_id, days, daily_rate, total)
-        pd_result = await client.post("/travelExpense/perDiemCompensation", per_diem_payload)
-        pd_value = pd_result.get("value", {})
-        if not (pd_value.get("id") or pd_value.get("url")):
-            errors.append(f"Per diem compensation failed: {pd_result}")
-            logger.error("Failed to add per diem to expense %d: %s", expense_id, pd_result)
-
-    # Step 5: Add regular cost lines
-    for cost in costs:
-        cost_date = cost.get("date") or data.get("date") or _date.today().isoformat()
-
-        cost_payload = {
-            "travelExpense": {"id": expense_id},
-            "date": cost_date,
-            "amountCurrencyIncVat": cost.get("amountCurrencyIncVat", cost.get("amount", 0)),
-        }
-
-        if payment_type_id:
-            cost_payload["paymentType"] = {"id": payment_type_id}
-
-        desc = cost.get("comments", cost.get("description", ""))
-        if desc:
-            cost_payload["comments"] = desc
-
-        if cost.get("vatTypeId"):
-            cost_payload["vatType"] = {"id": cost["vatTypeId"]}
-        if cost.get("currencyId"):
-            cost_payload["currency"] = {"id": cost["currencyId"]}
-
-        logger.info("Adding cost line to expense %d: %s", expense_id, desc)
-        cl_result = await client.post("/travelExpense/cost", cost_payload)
-        cl_value = cl_result.get("value", {})
-        if not (cl_value.get("id") or cl_value.get("url")):
-            errors.append(f"Cost line '{desc}' failed: {cl_result}")
-            logger.error("Failed to add cost line to expense %d: %s", expense_id, cl_result)
-
-    if errors:
-        result["ok"] = False
-        result["errors"] = errors
-        result["_needs_repair"] = (
-            f"Travel expense {expense_id} created but {len(errors)} sub-item(s) failed. "
-            "Use raw API calls (POST /travelExpense/perDiemCompensation or POST /travelExpense/cost) to retry."
-        )
     return result
 
 
 async def delete_travel_expense(data: dict, client: TripletexClient) -> dict:
-    """Delete a travel expense by ID, or search by employee/title."""
+    """Delete a travel expense by ID, or search by employee/title. Fails explicitly if not found."""
     expense_id = data.get("travelExpenseId") or data.get("id")
 
     if not expense_id:
-        # Search by employee email or title
         params = {"count": "100"}
         if data.get("employeeEmail"):
-            # Find employee first
             emp_result = await client.get("/employee", params={"email": data["employeeEmail"], "count": "1"})
             employees = emp_result.get("values", [])
             if employees:
@@ -216,16 +203,11 @@ async def delete_travel_expense(data: dict, client: TripletexClient) -> dict:
         for exp in expenses:
             if title and title in exp.get("title", "").lower():
                 expense_id = exp["id"]
-                logger.info("Found travel expense by title '%s' (id=%d)", title, expense_id)
                 break
-        if not expense_id and expenses:
-            expense_id = expenses[0]["id"]
-            logger.info("Using first travel expense (id=%d)", expense_id)
 
     if not expense_id:
         logger.error("No travel expense found for deletion: %s", data)
         return {"error": "No travel expense found"}
 
     logger.info("Deleting travel expense %d", expense_id)
-    result = await client.delete(f"/travelExpense/{expense_id}")
-    return result
+    return await client.delete(f"/travelExpense/{expense_id}")

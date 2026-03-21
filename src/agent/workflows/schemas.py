@@ -332,6 +332,7 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "hours", "type": "number", "required": True, "description": "Number of hours to register"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Date for the entry (defaults to today)"},
             {"name": "chargeableHours", "type": "number", "required": False, "description": "Billable hours (defaults to same as hours)"},
+            {"name": "hourlyRate", "type": "number", "required": False, "description": "Hourly rate (NOK/h). Sets the project's hourly rate config so entries become chargeable. IMPORTANT: must be set BEFORE invoicing."},
         ],
     },
     "register_employment": {
@@ -447,8 +448,9 @@ TASK_SCHEMAS: dict[str, dict] = {
         "api_endpoint": "PUT /invoice/{id}/:payment + POST /ledger/voucher",
         "notes": (
             "Registers payment on a foreign-currency invoice AND posts the exchange difference voucher "
-            "(disagio = loss, agio = gain). Self-contained: finds the invoice, registers payment at the "
-            "actual NOK received, calculates exchange difference, posts to account 8060. "
+            "(disagio = loss on 8060, agio = gain on 8160). Self-contained: finds the invoice, registers "
+            "payment at the actual NOK received, calculates exchange difference, posts disagio/agio. "
+            "Rates are OPTIONAL — if omitted, fetches official Norges Bank rates via Tripletex API for the given dates. "
             "Use this for ANY task mentioning exchange rate differences, 'disagio', 'agio', valutadifferanse, "
             "différence de change, diferença cambial, Wechselkursdifferenz."
         ),
@@ -458,8 +460,9 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "invoiceId", "type": "integer", "required": False, "description": "Invoice ID if known"},
             {"name": "invoiceNumber", "type": "integer", "required": False, "description": "Invoice number if known"},
             {"name": "invoiceAmountForeign", "type": "number", "required": True, "description": "Invoice amount in foreign currency (e.g. 19074 EUR)"},
-            {"name": "invoiceRate", "type": "number", "required": True, "description": "Exchange rate at invoice time (e.g. 11.69 NOK/EUR)"},
-            {"name": "paymentRate", "type": "number", "required": True, "description": "Exchange rate at payment time (e.g. 11.28 NOK/EUR)"},
+            {"name": "invoiceRate", "type": "number", "required": False, "description": "Exchange rate at invoice time (e.g. 11.69 NOK/EUR). If omitted, fetched from API using invoiceDate."},
+            {"name": "paymentRate", "type": "number", "required": False, "description": "Exchange rate at payment time (e.g. 11.28 NOK/EUR). If omitted, fetched from API using paymentDate."},
+            {"name": "invoiceDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Date of original invoice (used for rate lookup when invoiceRate omitted)"},
             {"name": "currency", "type": "string", "required": False, "description": "Currency code (EUR, USD, GBP etc). Default EUR."},
             {"name": "paymentDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Date of payment"},
             {"name": "description", "type": "string", "required": False, "description": "Description for the exchange difference voucher"},

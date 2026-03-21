@@ -11,6 +11,44 @@ def _normalize(s: str) -> str:
     return s.strip().lower() if s else ""
 
 
+def _is_foreign_currency_invoice(invoice: dict) -> bool:
+    currency = invoice.get("currency") or {}
+    currency_code = (invoice.get("currencyCode") or currency.get("code") or "").upper()
+    return bool(currency_code and currency_code != "NOK")
+
+
+def _derive_paid_amount_currency(data: dict, invoice: dict, paid_amount: float | int | None) -> float | int | None:
+    explicit_amount = data.get("paidAmountCurrency")
+    if explicit_amount is not None:
+        return explicit_amount
+
+    if not _is_foreign_currency_invoice(invoice):
+        return None
+
+    amount_pairs = [
+        (invoice.get("amountOutstanding"), invoice.get("amountCurrencyOutstanding")),
+        (invoice.get("amountOutstandingTotal"), invoice.get("amountCurrencyOutstandingTotal")),
+        (invoice.get("amount"), invoice.get("amountCurrency")),
+    ]
+
+    if data.get("fullPayment"):
+        for _, currency_amount in amount_pairs:
+            if currency_amount is not None:
+                return currency_amount
+        return paid_amount
+
+    if paid_amount is None:
+        return None
+
+    for invoice_amount, currency_amount in amount_pairs:
+        if invoice_amount is None or currency_amount is None:
+            continue
+        if abs(float(invoice_amount) - float(paid_amount)) < 0.01:
+            return currency_amount
+
+    return None
+
+
 def _rank_invoice_match(data: dict, candidates: list[dict]) -> dict | None:
     """Rank invoice candidates by: customer org → customer name → amount/outstanding → description → recency."""
     org_number = data.get("customerOrgNumber") or data.get("organizationNumber") or ""
@@ -71,6 +109,53 @@ async def _find_payment_type_id(client: TripletexClient) -> int | None:
     return None
 
 
+async def _resolve_customer_id(data: dict, client: TripletexClient) -> int | None:
+    customer_id = data.get("customerId")
+    if customer_id:
+        return customer_id
+
+    org_number = data.get("customerOrgNumber") or data.get("organizationNumber")
+    if org_number:
+        cust_result = await client.get("/customer", params={"organizationNumber": org_number, "count": "1"})
+        custs = cust_result.get("values", [])
+        if custs:
+            return custs[0]["id"]
+
+    customer_name = data.get("customerName")
+    if customer_name:
+        cust_result = await client.get("/customer", params={"customerName": customer_name, "count": "5"})
+        for customer in cust_result.get("values", []):
+            if _normalize(customer.get("name", "")) == _normalize(customer_name):
+                return customer["id"]
+
+    return None
+
+
+async def _list_invoice_candidates(client: TripletexClient, search_params: dict) -> list[dict]:
+    page_size = int(search_params.get("count", "1000"))
+    offset = 0
+    invoices: list[dict] = []
+
+    while True:
+        page_params = {**search_params, "count": str(page_size), "from": str(offset)}
+        page = await client.get("/invoice", params=page_params)
+        values = page.get("values", [])
+        if not values:
+            break
+
+        invoices.extend(
+            inv for inv in values
+            if not inv.get("isCreditNote") and not inv.get("isCredited")
+        )
+
+        if len(values) < page_size:
+            break
+
+        offset += len(values)
+
+    return invoices
+
+
 async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
     """Find an invoice by ID, number, or ranked multi-pass search. Returns full invoice dict."""
     invoice_id = data.get("invoiceId")
@@ -90,37 +175,25 @@ async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
         if invoices:
             return invoices[0]
 
-    # Fetch all non-credit-note invoices for ranked matching
-    # NOTE: Do NOT filter by customerId here — competition data sometimes has
-    # the invoice on a different customer record than the one resolved from org number.
-    # The ranker scores by org, name, amount, description so it handles disambiguation.
     search_params = {
         "invoiceDateFrom": "2000-01-01",
         "invoiceDateTo": "2099-12-31",
         "count": "1000",
     }
-    # Still resolve customer_id for later use (invoice creation fallback)
-    customer_id = data.get("customerId")
-    if not customer_id:
-        org_number = data.get("customerOrgNumber") or data.get("organizationNumber")
-        if org_number:
-            cust_result = await client.get("/customer", params={"organizationNumber": org_number, "count": "1"})
-            custs = cust_result.get("values", [])
-            if custs:
-                customer_id = custs[0]["id"]
-        if not customer_id and data.get("customerName"):
-            cust_result = await client.get("/customer", params={"customerName": data["customerName"], "count": "5"})
-            for c in cust_result.get("values", []):
-                if _normalize(c.get("name", "")) == _normalize(data["customerName"]):
-                    customer_id = c["id"]
-                    break
+    customer_id = await _resolve_customer_id(data, client)
     if customer_id:
-        data["_resolved_customerId"] = customer_id
-    all_inv = await client.get("/invoice", search_params)
-    candidates = [
-        inv for inv in all_inv.get("values", [])
-        if not inv.get("isCreditNote") and not inv.get("isCredited")
-    ]
+        scoped_candidates = await _list_invoice_candidates(client, {
+            **search_params,
+            "customerId": str(customer_id),
+        })
+        if scoped_candidates:
+            scoped_match = _rank_invoice_match(data, scoped_candidates)
+            if scoped_match:
+                logger.info("Found invoice %d using customer-scoped search", scoped_match["id"])
+                return scoped_match
+        logger.info("No ranked invoice match in customer-scoped search, falling back to broad search")
+
+    candidates = await _list_invoice_candidates(client, search_params)
 
     if not candidates:
         return None
@@ -157,8 +230,10 @@ async def register_payment(data: dict, client: TripletexClient) -> dict:
     invoice_id = invoice["id"]
 
     # For "full payment", use the invoice's actual total amount (including VAT)
-    paid_amount = data.get("paidAmount") or data.get("amount")
-    if not paid_amount or data.get("fullPayment"):
+    paid_amount = data.get("paidAmount")
+    if paid_amount is None:
+        paid_amount = data.get("amount")
+    if paid_amount is None or data.get("fullPayment"):
         # Use the invoice's outstanding amount (includes VAT)
         paid_amount = invoice.get("amountOutstanding") or invoice.get("amount", 0)
         logger.info("Full payment: using invoice outstanding amount %s", paid_amount)
@@ -172,14 +247,16 @@ async def register_payment(data: dict, client: TripletexClient) -> dict:
         return {"error": "No payment type available"}
 
     params = {
-        "id": str(invoice_id),
         "paymentDate": data.get("paymentDate", data.get("date", date.today().isoformat())),
         "paymentTypeId": str(payment_type_id),
         "paidAmount": str(paid_amount),
     }
 
-    if data.get("paidAmountCurrency"):
-        params["paidAmountCurrency"] = str(data["paidAmountCurrency"])
+    paid_amount_currency = _derive_paid_amount_currency(data, invoice, paid_amount)
+    if paid_amount_currency is not None:
+        params["paidAmountCurrency"] = str(paid_amount_currency)
+    elif _is_foreign_currency_invoice(invoice):
+        logger.warning("Invoice %d uses foreign currency but paidAmountCurrency was not provided or inferred", invoice_id)
 
     logger.info("Registering payment on invoice %d: amount=%s, date=%s",
                 invoice_id, params["paidAmount"], params["paymentDate"])

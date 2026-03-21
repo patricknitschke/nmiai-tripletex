@@ -7,7 +7,7 @@ logger = logging.getLogger("agent.workflows.department")
 
 async def _next_dept_number(client: TripletexClient) -> str:
     """Return the next free department number (max existing + 1)."""
-    result = await client.get("/department", params={"count": "100"})
+    result = await client.get("/department", params={"count": "0", "fields": "departmentNumber"})
     existing = result.get("values", [])
     if not existing:
         return "1"
@@ -26,7 +26,7 @@ async def resolve_or_create_department(name: str, client: TripletexClient) -> in
     """Find a department by exact name, or create it with the next free number. Returns ID."""
     if not name:
         return None
-    search = await client.get("/department", params={"query": name, "count": "10"})
+    search = await client.get("/department", params={"name": name, "count": "10", "fields": "id,name"})
     for dept in search.get("values", []):
         if dept.get("name", "").lower() == name.lower():
             logger.info("Found department '%s' (id=%d)", name, dept["id"])
@@ -50,7 +50,7 @@ async def create_department(data: dict, client: TripletexClient) -> dict:
 
     # Search for existing department by name
     if name:
-        search = await client.get("/department", params={"query": name, "count": "10"})
+        search = await client.get("/department", params={"name": name, "count": "10"})
         for dept in search.get("values", []):
             if dept.get("name", "").lower() == name.lower():
                 dept_id = dept["id"]

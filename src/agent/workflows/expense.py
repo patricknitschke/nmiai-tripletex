@@ -1,8 +1,9 @@
+import asyncio
 import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
-from .voucher import _resolve_vat_type, _post_voucher
+from .voucher import _resolve_supplier, _resolve_vat_type, _post_voucher
 
 logger = logging.getLogger("agent.workflows.expense")
 
@@ -36,58 +37,69 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     payment_account = data.get("paymentAccount", 1920)
     supplier_name = data.get("supplierName", "")
 
-    # Calculate amounts
+    # Calculate amounts with consistency guard
     amount_incl = data.get("amountInclVat") or data.get("amount") or data.get("totalAmount")
     amount_excl = data.get("amountExclVat")
 
-    if amount_incl and not amount_excl:
+    if amount_incl and amount_excl:
+        # Both provided — verify consistency
+        expected_incl = round(amount_excl * (1 + vat_rate / 100), 2)
+        if abs(amount_incl - expected_incl) > 1.0:
+            return {"error": f"Amount mismatch: amountInclVat={amount_incl} but amountExclVat={amount_excl} × {1 + vat_rate/100} = {expected_incl}"}
+    elif amount_incl and not amount_excl:
         amount_excl = round(amount_incl / (1 + vat_rate / 100), 2)
     elif amount_excl and not amount_incl:
         amount_incl = round(amount_excl * (1 + vat_rate / 100), 2)
-    elif not amount_incl and not amount_excl:
+    else:
         return {"error": "No amount provided for expense"}
 
-    vat_amount = round(amount_incl - amount_excl, 2)
-
     full_desc = f"{supplier_name} - {description}" if supplier_name else description
-    logger.info("Registering expense: %s, total=%.2f, excl=%.2f, VAT=%.2f (%.0f%%)",
-                full_desc, amount_incl, amount_excl, vat_amount, vat_rate)
+    logger.info("Registering expense: %s, total=%.2f, excl=%.2f, VAT rate=%.0f%%",
+                full_desc, amount_incl, amount_excl, vat_rate)
 
-    # Resolve expense account (just need the ID)
-    warnings = []
-    expense_account_id = None
-    if expense_account:
+    # Resolve accounts, VAT type, supplier, and department in parallel
+    # Batch both account numbers in one API call
+    account_numbers = ",".join(str(a) for a in {expense_account, payment_account} if a)
+
+    async def _resolve_accounts():
         result = await client.get("/ledger/account", params={
-            "number": str(expense_account), "count": "1",
+            "number": account_numbers, "count": "10",
         })
-        accounts = result.get("values", [])
-        if accounts:
-            expense_account_id = accounts[0]["id"]
-            logger.info("Resolved expense account %s -> id=%d", expense_account, expense_account_id)
-        else:
-            warnings.append(f"Expense account {expense_account} not found — posting will lack account reference")
-            logger.warning("Expense account %s not found", expense_account)
+        return {a.get("number"): a["id"] for a in result.get("values", []) if a.get("id")}
 
-    # Resolve payment/bank account
-    payment_account_id = None
-    result = await client.get("/ledger/account", params={"number": str(payment_account), "count": "1"})
-    accounts = result.get("values", [])
-    if accounts:
-        payment_account_id = accounts[0]["id"]
-    else:
+    async def _resolve_dept():
+        department_id = data.get("departmentId")
+        if department_id:
+            return department_id
+        dept_name = data.get("departmentName") or data.get("department")
+        if dept_name:
+            from .department import resolve_or_create_department
+            return await resolve_or_create_department(dept_name, client)
+        return None
+
+    async def _resolve_sup():
+        if supplier_name:
+            return await _resolve_supplier(data, client)
+        return None
+
+    accounts_map, vat_type_id, department_id, supplier_id = await asyncio.gather(
+        _resolve_accounts(),
+        _resolve_vat_type(client, vat_rate, "input"),
+        _resolve_dept(),
+        _resolve_sup(),
+    )
+
+    expense_account_id = accounts_map.get(expense_account)
+    payment_account_id = accounts_map.get(payment_account)
+
+    # Fail fast if expense account not found — that's the critical one
+    if not expense_account_id:
+        return {"error": f"Expense account {expense_account} not found in Tripletex"}
+
+    warnings = []
+    if not payment_account_id:
         warnings.append(f"Payment account {payment_account} not found — credit posting will lack account reference")
         logger.warning("Payment account %s not found", payment_account)
-
-    # Resolve the REAL input VAT type (e.g. 25% inngående) — NOT the 0% no-VAT type!
-    vat_type_id = await _resolve_vat_type(client, vat_rate, "input")
-
-    # Resolve department
-    department_id = data.get("departmentId")
-    department_name = data.get("departmentName") or data.get("department")
-
-    if not department_id and department_name:
-        from .department import resolve_or_create_department
-        department_id = await resolve_or_create_department(department_name, client)
 
     # B25v2: Two postings — expense with amountGross + vatType, bank with negative amountGross
     # Tripletex auto-generates the VAT posting on 2710.
@@ -101,14 +113,15 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
         "date": expense_date,
         "description": full_desc,
         "amountGross": amount_incl,
+        "account": {"id": expense_account_id},
         "row": 1,
     }
-    if expense_account_id:
-        expense_posting["account"] = {"id": expense_account_id}
     if vat_type_id:
         expense_posting["vatType"] = {"id": vat_type_id}
     if department_id:
         expense_posting["department"] = {"id": department_id}
+    if supplier_id:
+        expense_posting["supplier"] = {"id": supplier_id}
     postings.append(expense_posting)
 
     payment_posting = {

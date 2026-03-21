@@ -52,8 +52,8 @@ POST /solve (100s deadline)
 
 **No workflow / gaps:**
 - Payroll (W1) — **register_payroll workflow built (v33)**, handles base salary + bonus via /salary/transaction with specifications. Auto-creates employment if missing. **B27 fix**: full GET before PUT for version. **B28 fix**: employment now linked to company division via GET /division (required for salary transactions).
-- Project invoices (W4) — no workflow, agent spirals on raw API
-- Ledger error correction (W11) — **analyze_ledger workflow built (P3)**, needs competition test. **compare_expenses workflow (v35)** uses /resultbudget/company for expense comparison (1 call vs N posting fetches)
+- Project invoices (W4) — **create_project_invoice workflow built (v34)**. **B45+B46 FIXED**: dateTo+1 day (exclusive param) + hourlyRate set via POST /project/hourlyRates (readOnly on entry). Both register_time and create_project_invoice auto-set rate.
+- Ledger error correction (W11) — **analyze_ledger workflow built (P3)**, needs competition test. **B47 FIXED**: (1) dateTo exclusive +1 day, (2) compare_expenses invalid params removed (client-side filter), (3) pagination loops, (4) `amount` not `amountGross` for balance check, (5) duplicate detection drops abs() + adds description to key, (6) voucher_summaries only flagged vouchers. **compare_expenses workflow (v35)** uses /resultbudget/company for expense comparison (1 call vs N posting fetches)
 - Monthly/yearly closing — **Chief bypass added (P2)**, Senior handles directly for closing tasks
 - Custom dimensions — **create_dimension workflow built (v30)**, handles name + values in one call. Voucher dimension linking works via freeAccountingDimension1/2/3. **create_dimension_voucher combo (v34)** chains dimension creation + voucher posting in one atomic call
 
@@ -64,7 +64,7 @@ POST /solve (100s deadline)
 |---|---|---|---|---|
 | Create employee | T1 | `create_employee` | 7/7 | None |
 | Set roles/admin | T1 | `create_employee` | — | Entitlement template = ALL_PRIVILEGES, works |
-| Employment contracts (PDF) | T3 | `register_employment` | 9/10 | Missing STYRK code extraction from PDFs — costs 1 check each time |
+| Employment contracts (PDF) | T3 | `register_employment` | 9/10 | **B44 FIXED**: STYRK code lookup now uses count=25 + prefix matching + fallback search. Was count=1 → silent skip |
 | Employee with start date (no PDF) | T1→T3 | **Misrouted** | 5/7 | Chief picks `create_employee` instead of `register_employment`. Routing hint exists in schema but LLM ignores it |
 
 ### Customers & Products (T1)
@@ -82,7 +82,7 @@ POST /solve (100s deadline)
 | Register payment | T2 | `register_payment` | 2/2 | **B38**: customer-filtered search can return 0 even when invoice exists (different customer record). Fixed: fallback broader search + amountExcludingVat matching |
 | Credit notes | T2 | `create_credit_note` | 1/5 | VAT interpretation + search-before-create both improved but **never retested** |
 | Supplier invoices | T3 | `create_supplier_invoice` | 5/6 | **B36 FIXED:** Was 1-posting (unbalanced). Now 2-posting: expense debit with vatType + AP 2400 credit with supplier ref. Same proven pattern as register_expense |
-| Project invoices | T2-T3 | `create_project_invoice` | 0 | **NEW v34**: Fixed-price % invoicing + time-based invoicing from timesheet hours. Needs competition test |
+| Project invoices | T2-T3 | `create_project_invoice` | 0 | **B45+B46 FIXED**: (1) dateTo is exclusive in Tripletex API — was `today`, now `today+1` so entries created today are found. (2) hourlyRate is readOnly on TimesheetEntry — now sets rate via `POST /project/hourlyRates` (TYPE_FIXED_HOURLY_RATE) before fetching hours. Both `register_time` and `create_project_invoice` set rate when hourlyRate provided. |
 | Reminder invoices | T2 | `find_overdue_invoices` + `create_voucher` + `create_invoice` + `register_payment` | 4/6 | **B41 FIXED**: (1) `find_overdue_invoices` workflow finds real overdue invoice + customer (2) `create_voucher` auto-attaches customer to AR account 1500 postings (3) Chief prompt guides 4-step order: find → voucher → invoice → payment |
 
 ### Travel Expenses (T2)
@@ -118,7 +118,7 @@ POST /solve (100s deadline)
 |---|---|---|---|---|
 | Customer payments | T3 | `reconcile_bank_statement` | 5/5 | None — perfect on every run |
 | Supplier payments | T3 | `reconcile_bank_statement` | **needs test** | **P1 FIXED:** Now auto-creates supplier invoices from CSV before matching. Extracts supplier name from description (6 languages) |
-| Bank fees/interest | T3 | Skipped | 0 | Code just logs "use create_voucher" and skips. No auto-voucher |
+| Bank fees/interest | T3 | `reconcile_bank_statement` | **needs test** | **B45-B51 FIXED:** Interest income (8040) vs expense (8150) now differentiated. Fee/interest auto-vouchers working. |
 
 ## Tier Coverage Summary
 
@@ -135,7 +135,7 @@ POST /solve (100s deadline)
 | P1 | Bank recon: create supplier invoices from CSV before matching | 3 | 3-6 pts | ✅ **IMPLEMENTED** | Auto-creates supplier invoices from CSV description + amount, then registers payment |
 | P2 | Monthly/yearly closing: skip Chief | 2 | 6-10 pts | ✅ **IMPLEMENTED** | Keyword detection bypasses Chief for closing/depreciation/accrual tasks |
 | P3 | Ledger error correction: analyze_ledger workflow | 1 | up to 6 pts (T3) | ✅ **IMPLEMENTED** | Fetches postings, detects imbalances/duplicates/orphaned VAT → Senior fixes via create_voucher |
-| P4 | Credit note retest | 3 | 6-12 pts (T2×2) | ⏳ Resubmit | VAT fix + search-before-create already deployed. Just needs resubmission |
+| P4 | Credit note retest | 3 | 6-12 pts (T2×2) | ⏳ Resubmit | Hardened: removed fuzzy match + create-then-credit fallback, added creditNoteEmail/sendType, fixed id-in-params bug |
 
 ## Workflows (18 total)
 
@@ -148,7 +148,7 @@ POST /solve (100s deadline)
 | 5 | create_order | T1 | Order creation |
 | 6 | create_invoice | T1 | Invoice (auto-creates customer, products, VAT) |
 | 7 | register_payment | T2 | Self-contained: finds invoice, uses actual amount |
-| 8 | create_credit_note | T2 | Self-contained: finds invoice, creates if needed |
+| 8 | create_credit_note | T2 | Requires explicit invoiceId/invoiceNumber, forwards creditNoteEmail+sendType |
 | 9 | create_travel_expense | T2 | Travel + per diem + costs |
 | 10 | delete_travel_expense | T2 | Delete by ID/employee/title |
 | 11 | create_project | T2 | Project + customer/PM resolution |
@@ -202,6 +202,15 @@ POST /solve (100s deadline)
 | B40 | FX invoice not settled (amountOutstanding ≠ 0) | 2/4 — Payment registered 68033.91 NOK but invoice was 71480.41 NOK → amountOutstanding = 3446.50. Disagio voucher hit GL but didn't close the invoice. | ✅ FIXED — Payment now passes both `paidAmount` (68033.91 NOK received) AND `paidAmountCurrency` (6893 EUR = full foreign amount). Invoice fully settled at 0 outstanding. |
 | B41 | Chief fabricates customers + create_voucher 422 "Kunde mangler" on AR postings | Overdue invoice task: (1) Chief invented "Musterkunde GmbH" instead of finding real customer. (2) Voucher 422 because AR account 1500 requires customer reference. (3) Double-booking: invoice + manual voucher for same 70 NOK. (4) Wrong execution order: payment before finding invoice. | ✅ FIXED — (1) `find_overdue_invoices` workflow searches real invoices. (2) `create_voucher` auto-attaches customer to AR postings (1500-1599) via `customerName`/`customerId` fields. (3) Chief prompt: explicit 4-step order for overdue tasks + NEVER fabricate names. (4) Senior prompt: overdue invoice guidance. (5) Schema: `customerName`/`customerId` added to `create_voucher`. |
 | B42 | create_supplier_invoice expense posting missing project reference | Project lifecycle: 71800 kr supplier cost on account 6300 not linked to project "Dataplattform Brattli" — cost invisible in project reports/economy. | ✅ FIXED — Added `projectId` param to schema + workflow. Expense posting (row 1) now includes `project: {id}` when projectId is provided. |
+| B44 | STYRK occupation code lookup too narrow (count=1) | Employment 9/10 — STYRK 3323 returned 0 results with count=1 (API uses substring match, ordering may not surface exact match). Field omitted silently instead of retried. | ✅ FIXED — `_resolve_occupation_code()` helper: count=25, prefers exact/prefix match, falls back to shorter prefix search (first 2 digits, count=50). Same fix in payroll.py. |
+| B45 | Interest expense posted with wrong accounts (income accounts used) | Bank recon interest expenses Debit 1920/Credit 8040 (income). Should be Debit 8150 (expense)/Credit 1920 (bank). `_classify` returned generic "interest" without direction. | ✅ FIXED — `_classify` now returns `interest_income` or `interest_expense` based on amount direction. `_post_fee_or_interest_voucher` routes to correct accounts (8150 for expense, 8040 for income). |
+| B46 | Redundant path param in query params | `_pay_customer_invoice` sent `id` as query param (already in URL path). `_pay_supplier_invoice` sent `invoiceId`. Not harmful but misleading. | ✅ FIXED — Removed redundant query params. |
+| B47 | Hardcoded 25% VAT in supplier fallback voucher | `_post_supplier_bank_payment` always assumed 25% VAT. Many transactions have 0/12/15% VAT → wrong accounting entries. | ✅ FIXED — `_detect_vat_rate()` infers VAT from description keywords (transport=12%, food=15%, default=25%). |
+| B48 | Hardcoded expense account 7300 for all supplier payments | Every fallback voucher debited 7300 (external services). Supplier expenses span 4000-7000 series. | ✅ FIXED — `_detect_expense_account()` infers account from description (rent→6300, IT→6540, travel→7140, goods→4300, default→7300). |
+| B49 | Customer invoice matching Pass 3 (exact amount, any customer) too loose | Common amounts match wrong customer's invoice before name-only check runs. | ✅ FIXED — Reordered: name+partial (Pass 3) now runs before amount-only (Pass 4). Removed Pass 5 (any invoice with enough outstanding). |
+| B50 | FX payment: 8060 used for both disagio and agio + no API rate lookup + wasteful currency fallback | (1) Agio (gain) posted to 8060 Valutatap instead of 8160 Valutagevinst — non-standard reporting. (2) Manual rates required even though Tripletex has exchange rate API. (3) Currency lookup did a full scan fallback (100 currencies) when code filter returned nothing — wastes API call with no benefit. | ✅ FIXED — (1) Agio now posts to 8160 Valutagevinst, disagio stays on 8060 Valutatap. (2) `_get_exchange_rate_nok()` helper uses `GET /currency/{id}/exchangeRate` for official Norges Bank rates when rates aren't provided. (3) Removed currency fallback scan. Schema: invoiceRate/paymentRate now optional, added invoiceDate field. |
+| B50 | No pagination — max 1000 invoices | Companies with >1000 invoices silently get truncated data. | ✅ FIXED — `_fetch_all_pages()` helper paginates through all results. |
+| B51 | Interest amount picks wrong field (amount_out for income) | `amount = amount_out if amount_out > 0 else amount_in` picks wrong value if both set for interest income. | ✅ FIXED — Explicit branching: `interest_income` uses `amount_in`, `interest_expense` uses `amount_out`. |
 
 ## Day 3 Evening — Priority Action Queue (March 21)
 
@@ -221,7 +230,7 @@ POST /solve (100s deadline)
 
 **Tasks NOT worth fixing (low ROI):**
 - Payroll (W1): **FIXED** — register_payroll workflow built after 4/4 fail on March 21. Now seen multiple times.
-- Forex disagio: **B39+B40 FIXED** — invoice now created in foreign currency + paidAmountCurrency settles fully
+- Forex disagio: **B39+B40+B47 FIXED** — invoice in foreign currency + paidAmountCurrency settles fully + B47: (1) agio now uses 8160 Valutagevinst (was 8060 for both), (2) exchange rate API auto-lookup when rates omitted, (3) removed wasteful currency fallback scan
 
 ## Tracking Files
 - `docs/tasks.csv` — 54+ competition prompts with scores, versions, analysis + summary section

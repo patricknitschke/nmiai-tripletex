@@ -13,11 +13,19 @@ def _today() -> str:
 
 async def _ensure_bank_account(client: TripletexClient) -> None:
     """Ensure the company has a bank account registered (required for invoicing)."""
+    if getattr(client, "_bank_account_ready", False):
+        return
+
     # Check if account 1920 (standard Norwegian bank account) exists
-    result = await client.get("/ledger/account", params={"number": "1920", "count": "1"})
+    result = await client.get("/ledger/account", params={
+        "number": "1920",
+        "count": "1",
+        "fields": "id,version,name,bankAccountNumber",
+    })
     accounts = result.get("values", [])
     if accounts and accounts[0].get("bankAccountNumber"):
         logger.info("Bank account already exists on account 1920")
+        client._bank_account_ready = True
         return
 
     # Create or update account 1920 with a dummy bank account number
@@ -25,8 +33,9 @@ async def _ensure_bank_account(client: TripletexClient) -> None:
         # Account exists but has no bank number — update it
         account_id = accounts[0]["id"]
         logger.info("Updating account 1920 (id=%d) with bank account number", account_id)
-        await client.put(f"/ledger/account/{account_id}", {
+        write_result = await client.put(f"/ledger/account/{account_id}", {
             "id": account_id,
+            "version": accounts[0]["version"],
             "name": accounts[0].get("name", "Bank"),
             "number": 1920,
             "bankAccountNumber": "86011117947",
@@ -35,12 +44,15 @@ async def _ensure_bank_account(client: TripletexClient) -> None:
     else:
         # Create account 1920
         logger.info("Creating bank account (ledger account 1920)")
-        await client.post("/ledger/account", {
+        write_result = await client.post("/ledger/account", {
             "name": "Bank",
             "number": 1920,
             "bankAccountNumber": "86011117947",
             "isBankAccount": True,
         })
+
+    if not write_result.get("error"):
+        client._bank_account_ready = True
     logger.info("Bank account registered")
 
 
@@ -61,7 +73,7 @@ async def _ensure_customer(data: dict, client: TripletexClient) -> int | None:
     # Try to find by name — exact match
     customer_name = data.get("customerName")
     if customer_name:
-        search = await client.get("/customer", params={"name": customer_name, "count": "10"})
+        search = await client.get("/customer", params={"customerName": customer_name, "count": "10"})
         for cust in search.get("values", []):
             if cust.get("name", "").lower() == customer_name.lower():
                 return cust["id"]
@@ -87,12 +99,10 @@ async def _lookup_vat_type_by_rate(rate: float, client: TripletexClient) -> int 
         _vat_cache_client_id = id(client)
 
     if not _vat_cache:
-        result = await client.get("/ledger/vatType", params={"count": "100"})
+        result = await client.get("/ledger/vatType", params={"typeOfVat": "OUTGOING", "count": "100"})
         for vt in result.get("values", []):
             pct = vt.get("percentage")
-            name = vt.get("name", "")
-            # Only cache "Utgående" (output/sales) VAT types — skip input, reversal, etc.
-            if pct is not None and "utgående" in name.lower():
+            if pct is not None:
                 # Prefer simple numbered codes (3, 31, 33) over special ones (UTTAK, TAP, etc.)
                 number = vt.get("number", "")
                 if pct not in _vat_cache or number.isdigit():
@@ -229,7 +239,7 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
     order_payload = {
         "customer": {"id": customer_id},
         "orderDate": invoice_date,
-        "deliveryDate": due_date or invoice_date,
+        "deliveryDate": data.get("deliveryDate", invoice_date),
         "orderLines": order_lines,
     }
     if data.get("currencyId"):
@@ -246,9 +256,11 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
         return order_result
 
     # Step 2: Invoice from order — PUT /order/{id}/:invoice (query params)
-    invoice_params = {"id": str(order_id), "invoiceDate": invoice_date}
-    if data.get("sendToCustomer"):
-        invoice_params["sendToCustomer"] = "true"
+    invoice_params = {
+        "id": str(order_id),
+        "invoiceDate": invoice_date,
+        "sendToCustomer": "true" if data.get("sendToCustomer") else "false",
+    }
 
     logger.info("Creating invoice from order %d", order_id)
     result = await client.put(f"/order/{order_id}/:invoice", params=invoice_params)

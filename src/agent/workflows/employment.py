@@ -7,6 +7,42 @@ from .employee import create_employee
 logger = logging.getLogger("agent.workflows.employment")
 
 
+async def _resolve_occupation_code(code: str, client: TripletexClient) -> dict | None:
+    """Resolve a STYRK occupation code string to its Tripletex object.
+
+    Searches broadly (count=25) since the API code param is substring match.
+    Prefers exact prefix match, falls back to first result.
+    If nothing found, retries with shorter prefix (first 2 digits).
+    """
+    # First attempt: search with full code, broad count
+    oc_result = await client.get("/employee/employment/occupationCode", params={"code": code, "count": "25"})
+    oc_values = oc_result.get("values", [])
+
+    if oc_values:
+        # Prefer exact match or prefix match (e.g. "3323" matches "3323.101")
+        for oc in oc_values:
+            oc_code = oc.get("code", "")
+            if oc_code == code or oc_code.startswith(code):
+                return oc
+        # No exact/prefix match — return first result (closest substring match)
+        return oc_values[0]
+
+    # Fallback: search with shorter prefix (first 2 digits) to catch format variations
+    if len(code) >= 3:
+        logger.info("STYRK %s: no results with full code, trying prefix %s", code, code[:2])
+        oc_result2 = await client.get("/employee/employment/occupationCode", params={"code": code[:2], "count": "50"})
+        oc_values2 = oc_result2.get("values", [])
+        for oc in oc_values2:
+            if code in oc.get("code", ""):
+                return oc
+        # Still try first result with matching prefix
+        for oc in oc_values2:
+            if oc.get("code", "").startswith(code[:2]):
+                return oc
+
+    return None
+
+
 async def register_employment(data: dict, client: TripletexClient) -> dict:
     """Register a full employment contract: employee + department + employment + salary + working hours.
 
@@ -60,13 +96,14 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
     occupation_code = data.get("occupationCode") or data.get("styrkCode")
     if occupation_code:
         # STYRK code must be resolved to its Tripletex internal ID
-        oc_result = await client.get("/employee/employment/occupationCode", params={"code": str(occupation_code), "count": "1"})
-        oc_values = oc_result.get("values", [])
-        if oc_values:
-            details_obj["occupationCode"] = {"id": oc_values[0]["id"]}
-            logger.info("Resolved STYRK %s → id=%d", occupation_code, oc_values[0]["id"])
+        # Use broad count — API code param is substring/"Containing" match
+        oc_str = str(occupation_code).strip()
+        matched_oc = await _resolve_occupation_code(oc_str, client)
+        if matched_oc:
+            details_obj["occupationCode"] = {"id": matched_oc["id"]}
+            logger.info("Resolved STYRK %s → id=%d (code=%s)", occupation_code, matched_oc["id"], matched_oc.get("code"))
         else:
-            logger.warning("STYRK code %s not found in Tripletex, skipping", occupation_code)
+            logger.warning("STYRK code %s not found in Tripletex after broad search, skipping", occupation_code)
 
     percentage = data.get("percentageOfFullTimeEquivalent") or data.get("percentage")
     if percentage is not None:

@@ -150,11 +150,12 @@ async def create_dimension_voucher(data: dict, client: TripletexClient) -> dict:
         dim_result["dimensionValueId"] = target_value_id
         dim_result["_needs_repair"] = (
             f"Dimension created OK. To post voucher: use create_voucher with "
-            f"dimensionId={target_value_id} and dimensionIndex={dimension_index}"
+            f"freeAccountingDimension{dimension_index}: {{\"id\": {target_value_id}}} on each posting"
         )
         return dim_result
 
     amount = float(amount)
+    dim_field = f"freeAccountingDimension{dimension_index}"
     voucher_data = {
         "description": desc,
         "date": voucher_date,
@@ -163,8 +164,7 @@ async def create_dimension_voucher(data: dict, client: TripletexClient) -> dict:
                 "account": account,
                 "amount": amount,
                 "description": desc,
-                "dimensionId": target_value_id,
-                "dimensionIndex": dimension_index,
+                dim_field: {"id": target_value_id},
             },
             {
                 "account": balancing,
@@ -194,7 +194,7 @@ async def create_dimension_voucher(data: dict, client: TripletexClient) -> dict:
     else:
         combined["_needs_repair"] = (
             f"Dimension created but voucher failed. Use create_voucher with "
-            f"dimensionId={target_value_id}, dimensionIndex={dimension_index}"
+            f"freeAccountingDimension{dimension_index}: {{\"id\": {target_value_id}}} on each posting"
         )
 
     return combined

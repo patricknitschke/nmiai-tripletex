@@ -1,10 +1,37 @@
-import copy
 import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
 
 logger = logging.getLogger("agent.workflows.voucher")
+
+
+async def _resolve_accounts_batch(client: TripletexClient, account_numbers: set[str]) -> dict[str, dict]:
+    """Resolve account numbers to account objects using one GET call."""
+    if not account_numbers:
+        return {}
+
+    result = await client.get(
+        "/ledger/account",
+        params={
+            "number": ",".join(sorted(account_numbers)),
+            "count": str(max(len(account_numbers), 1)),
+            "fields": "id,number,vatType,vatLocked,ledgerType",
+        },
+    )
+    return {
+        str(acc.get("number")): acc
+        for acc in result.get("values", [])
+        if acc.get("number") is not None
+    }
+
+
+async def _get_vat_types(client: TripletexClient, direction: str | None = None) -> list[dict]:
+    params = {"count": "100"}
+    if direction in {"input", "output"}:
+        params["typeOfVat"] = "INCOMING" if direction == "input" else "OUTGOING"
+    result = await client.get("/ledger/vatType", params=params)
+    return result.get("values", [])
 
 
 async def _resolve_supplier(data: dict, client: TripletexClient) -> int | None:
@@ -23,27 +50,14 @@ async def _resolve_supplier(data: dict, client: TripletexClient) -> int | None:
         if values:
             existing = values[0]
             logger.info("Found existing supplier by org number %s (id=%d)", org_number, existing["id"])
-            # Ensure isSupplier is set
-            if not existing.get("isSupplier"):
-                logger.info("Updating customer %d to set isSupplier=True", existing["id"])
-                await client.put(f"/customer/{existing['id']}", {**existing, "isSupplier": True})
             return existing["id"]
 
-    # Search by name — exact match
+    # Search by name (server filtered), then keep strict exact match locally.
     if supplier_name:
-        result = await client.get("/customer", params={"name": supplier_name, "count": "10"})
+        result = await client.get("/customer", params={"customerName": supplier_name, "count": "20"})
         for cust in result.get("values", []):
             if cust.get("name", "").lower() == supplier_name.lower():
                 logger.info("Found existing supplier by name %s (id=%d)", supplier_name, cust["id"])
-                # Ensure isSupplier is set and org number is present
-                update = {}
-                if not cust.get("isSupplier"):
-                    update["isSupplier"] = True
-                if org_number and not cust.get("organizationNumber"):
-                    update["organizationNumber"] = org_number
-                if update:
-                    logger.info("Updating customer %d with: %s", cust["id"], list(update.keys()))
-                    await client.put(f"/customer/{cust['id']}", {**cust, **update})
                 return cust["id"]
 
     # Create supplier if we have enough info
@@ -63,39 +77,11 @@ async def _resolve_supplier(data: dict, client: TripletexClient) -> int | None:
 
 async def _resolve_vat_type(client: TripletexClient, rate: float, direction: str = "input") -> int | None:
     """Find VAT type ID by rate. direction: 'input' for incoming, 'output' for outgoing."""
-    result = await client.get("/ledger/vatType", params={"count": "100"})
-    vat_types = result.get("values", [])
-
-    keyword = "inngående" if direction == "input" else "utgående"
-
-    # First pass: match by keyword + rate
+    vat_types = await _get_vat_types(client, direction=direction)
     for vt in vat_types:
-        name = vt.get("name", "").lower()
         pct = vt.get("percentage", 0)
-        if keyword in name and abs(pct - rate) < 0.01:
+        if abs(pct - rate) < 0.01:
             logger.info("Resolved %s VAT type: %.1f%% -> id=%d (%s)", direction, rate, vt["id"], vt.get("name"))
-            return vt["id"]
-
-    # Second pass: try alternate keywords (some systems use different names)
-    alt_keywords = {
-        "input": ["innkommende", "fradrag", "input"],
-        "output": ["utgående", "salg", "output"],
-    }
-    for alt in alt_keywords.get(direction, []):
-        for vt in vat_types:
-            name = vt.get("name", "").lower()
-            pct = vt.get("percentage", 0)
-            if alt in name and abs(pct - rate) < 0.01:
-                logger.info("Resolved %s VAT type (alt '%s'): %.1f%% -> id=%d (%s)", direction, alt, rate, vt["id"], vt.get("name"))
-                return vt["id"]
-
-    # Last resort: match by rate only but EXCLUDE the wrong direction
-    wrong_keyword = "utgående" if direction == "input" else "inngående"
-    for vt in vat_types:
-        name = vt.get("name", "").lower()
-        pct = vt.get("percentage", 0)
-        if abs(pct - rate) < 0.01 and wrong_keyword not in name:
-            logger.info("Resolved VAT type by rate (excluding %s): %.1f%% -> id=%d (%s)", wrong_keyword, rate, vt["id"], vt.get("name"))
             return vt["id"]
 
     logger.warning("Could not find VAT type for %.1f%% (%s)", rate, direction)
@@ -151,25 +137,25 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     # Resolve supplier
     supplier_id = await _resolve_supplier(data, client)
 
-    # Resolve expense account (just need the ID)
+    # Resolve expense + AP account in one API call.
+    account_numbers = {"2400"}
+    if expense_account:
+        account_numbers.add(str(expense_account))
+    account_map = await _resolve_accounts_batch(client, account_numbers)
+
     expense_account_id = None
     if expense_account:
-        result = await client.get("/ledger/account", params={
-            "number": str(expense_account), "count": "1",
-        })
-        accounts = result.get("values", [])
-        if accounts:
-            expense_account_id = accounts[0]["id"]
+        exp_acc = account_map.get(str(expense_account))
+        if exp_acc:
+            expense_account_id = exp_acc["id"]
             logger.info("Resolved expense account %s -> id=%d", expense_account, expense_account_id)
         else:
             logger.warning("Expense account %s not found", expense_account)
 
-    # Resolve AP account 2400 (Leverandørgjeld / Accounts Payable)
     ap_account_id = None
-    result = await client.get("/ledger/account", params={"number": "2400", "count": "1"})
-    accounts = result.get("values", [])
-    if accounts:
-        ap_account_id = accounts[0]["id"]
+    ap_acc = account_map.get("2400")
+    if ap_acc:
+        ap_account_id = ap_acc["id"]
         logger.info("Resolved AP account 2400 -> id=%d", ap_account_id)
     else:
         logger.warning("AP account 2400 not found")
@@ -229,45 +215,13 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
 
 
 def _split_into_balanced_pairs(postings_data: list) -> list[list[dict]]:
-    """Try to split postings into balanced debit/credit pairs.
-
-    For closing tasks the LLM often sends 6 postings (3 journal entries)
-    in one call. We split them into groups of 2 (each balanced to 0)
-    so each can be posted as a separate voucher.
-
-    Falls back to returning the full list as one group if pairs don't balance.
-    """
-    if len(postings_data) <= 2:
-        return [postings_data]
-
-    # Try greedy pairing: take 2 at a time, check if they sum to 0
-    pairs = []
-    remaining = list(postings_data)
-    i = 0
-    while i < len(remaining) - 1:
-        pair = [remaining[i], remaining[i + 1]]
-        total = sum(p.get("amount", p.get("amountGross", 0)) for p in pair)
-        if abs(total) < 0.01:  # balanced pair
-            pairs.append(pair)
-            i += 2
-        else:
-            # Not a pair — try as a single group from here
-            break
-
-    if i < len(remaining):
-        # Remaining postings go as one group
-        pairs.append(remaining[i:])
-
-    # Only use split if we got multiple groups
-    if len(pairs) > 1:
-        return pairs
+    """Compatibility helper: splitting is handled by the caller, not this workflow."""
     return [postings_data]
 
 
 async def _resolve_no_vat_type(client: TripletexClient) -> int | None:
     """Find the 'no VAT' / exempt (0%) VAT type. Cached after first call."""
-    result = await client.get("/ledger/vatType", params={"count": "100"})
-    vat_types = result.get("values", [])
+    vat_types = await _get_vat_types(client)
 
     # Prefer explicit 0% / exempt types
     for vt in vat_types:
@@ -287,27 +241,17 @@ async def _resolve_no_vat_type(client: TripletexClient) -> int | None:
     return None
 
 
-# System accounts: Tripletex auto-generates postings for these
-_VAT_ACCOUNTS = {"2710", "2711", "2700", "2701", "2702", "2703", "2714", "2715"}
-_SUPPLIER_ACCOUNTS = {"2400", "2401"}
-_SYSTEM_ACCOUNTS = _VAT_ACCOUNTS | _SUPPLIER_ACCOUNTS
-
-
 async def _resolve_postings(postings_data: list, voucher_date: str, description: str, client: TripletexClient, no_vat_type_id: int | None = None, voucher_customer_id: int | None = None) -> list[dict]:
-    """Resolve account numbers to IDs for each posting.
+    """Resolve account numbers to IDs for each posting using one account GET."""
+    account_numbers = {
+        str(p.get("account") or p.get("accountNumber"))
+        for p in postings_data
+        if p.get("account") or p.get("accountNumber")
+    }
+    account_map = await _resolve_accounts_batch(client, account_numbers)
 
-    B25v2: Detects and drops system-managed postings (2710 VAT, 2400 supplier).
-    When the LLM sends 3 postings (expense + 2710 + 2400), we keep only the
-    expense line with amountGross and let Tripletex auto-generate the rest.
-    The expense line gets the account's default vatType so Tripletex can split.
-
-    B41v2: If voucher_customer_id is provided and an account has ledgerType=CUSTOMER,
-    auto-attaches customer even if the posting didn't explicitly have customerId.
-    """
-    # First pass: resolve accounts and discover VAT configs
-    # row>=1 because row 0 is reserved for system-generated postings
     row_counter = 1
-    resolved = []  # list of (posting_dict, account_number_str, has_default_vat)
+    resolved = []
     for p in postings_data:
         posting = {
             "date": voucher_date,
@@ -321,18 +265,14 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
         account_has_default_vat = False
         acc_num_str = str(account_number) if account_number else ""
         account_ledger_type = None
-        if account_number:
-            result = await client.get("/ledger/account", params={
-                "number": acc_num_str, "count": "1",
-                "fields": "id,vatType,vatLocked,ledgerType",
-            })
-            accounts = result.get("values", [])
-            if accounts:
-                acc = accounts[0]
-                posting["account"] = {"id": acc["id"]}
-                if acc.get("vatLocked") or acc.get("vatType"):
-                    account_has_default_vat = True
-                account_ledger_type = acc.get("ledgerType")
+        if account_number and acc_num_str in account_map:
+            acc = account_map[acc_num_str]
+            posting["account"] = {"id": acc["id"]}
+            if acc.get("vatLocked") or acc.get("vatType"):
+                account_has_default_vat = True
+            account_ledger_type = acc.get("ledgerType")
+        elif account_number:
+            logger.warning("Account %s could not be resolved", acc_num_str)
 
         # VAT type: only set on non-system accounts
         if p.get("vatTypeId"):
@@ -364,57 +304,18 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
             posting[dim_key] = {"id": dim_id}
             logger.info("Posting linked to %s (id=%d)", dim_key, dim_id)
 
-        resolved.append((posting, acc_num_str, account_has_default_vat))
+        resolved.append(posting)
 
-    # Second pass (B25v2): drop system-managed postings (2710, 2400).
-    # If LLM sent manual postings to these, remove them and ensure the
-    # expense line uses amountGross so Tripletex auto-generates the rest.
-    # B34 fix: ONLY drop system accounts when there is at least one expense
-    # account (4xxx-7xxx) in the mix — meaning Tripletex would auto-generate
-    # the VAT/supplier posting. If no expense account present (pure balance-sheet
-    # correction like 2710↔1920), keep everything as-is.
-    system_indices = {i for i, (_, acn, _) in enumerate(resolved) if acn in _SYSTEM_ACCOUNTS}
-    has_expense_account = any(
-        acn and acn[0] in ("4", "5", "6", "7")
-        for _, acn, _ in resolved
-    )
-
-    # NOTE: edge case — a mixed voucher with BOTH an expense line (6xxx) AND an intentional
-    # manual 2710 correction would have the 2710 dropped. In practice the Senior prompt says
-    # "post each correction as a separate voucher" so this shouldn't happen. If it does,
-    # we'd need to distinguish LLM-intended vs Tripletex-auto-generated 27xx postings.
-    if system_indices and len(resolved) > len(system_indices) and has_expense_account:
-        dropped = [resolved[i][1] for i in system_indices]
-        logger.info("B25v2: Dropping system-managed postings: %s (Tripletex auto-generates these)", dropped)
-        resolved = [(p, a, h) for j, (p, a, h) in enumerate(resolved) if j not in system_indices]
-
-        # Renumber rows after dropping system postings (rows must be sequential from 1)
-        for idx, (p, _, _) in enumerate(resolved):
-            p["row"] = idx + 1
-
-        # Ensure remaining expense lines have amountGross set to the original
-        # gross amount (LLM may have sent net amounts with separate VAT line)
-        # Recalculate: the absolute total of the dropped lines tells us what's missing
-        # But we can't reliably recalculate here — trust that amountGross is already correct
-        # (the LLM or caller should provide the gross amount per posting)
-    elif system_indices and not has_expense_account:
-        logger.info("B34: Keeping system-account postings %s (pure correction — no expense account in mix)",
-                     [resolved[i][1] for i in system_indices])
-
-    return [posting for posting, _, _ in resolved]
+    return resolved
 
 
 async def _post_voucher(voucher: dict, client: TripletexClient) -> dict:
-    """Post a voucher with a smart fallback on systemgenererte error.
+    """Post voucher once; caller must provide a valid payload."""
+    currency_code = str(voucher.get("currency", {}).get("code", "")).upper()
+    should_set_amount_gross_currency = not currency_code or currency_code == "NOK"
 
-    Fallback strategy (B25): if the first POST fails with "systemgenererte",
-    the postings likely contain a manual VAT line (e.g. 2710) that Tripletex
-    wants to auto-generate.  We merge any 27xx VAT postings into their
-    companion posting's amountGross and retry.
-    """
-    # Ensure amountGrossCurrency matches amountGross (required by Tripletex for NOK)
     for p in voucher.get("postings", []):
-        if "amountGross" in p and "amountGrossCurrency" not in p:
+        if should_set_amount_gross_currency and "amountGross" in p and "amountGrossCurrency" not in p:
             p["amountGrossCurrency"] = p["amountGross"]
 
     result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
@@ -424,40 +325,8 @@ async def _post_voucher(voucher: dict, client: TripletexClient) -> dict:
         logger.info("Voucher created with ID: %d", voucher_id)
         return result
 
-    # Check for systemgenererte error
-    error_msg = str(result.get("validationMessages", result.get("message", "")))
-    if "systemgenererte" not in error_msg.lower():
-        logger.error("Failed to create voucher: %s", result)
-        return result
-
-    # Fallback: strip vatType + merge VAT postings into amountGross
-    logger.warning("Voucher rejected (systemgenererte) — fallback: merge VAT postings")
-    voucher_clean = copy.deepcopy(voucher)
-    postings = voucher_clean.get("postings", [])
-
-    # Identify VAT postings by account ID (look up which are 27xx)
-    # We already have account IDs but not numbers — check if any posting
-    # has a small positive amount that looks like a VAT line.
-    # Simpler: strip vatType from all + convert amount→amountGross
-    for p in postings:
-        p.pop("vatType", None)
-        if "amount" in p and "amountGross" not in p:
-            p["amountGross"] = p.pop("amount")
-        if "amountGross" in p and "amountGrossCurrency" not in p:
-            p["amountGrossCurrency"] = p["amountGross"]
-
-    result = await client.post("/ledger/voucher", voucher_clean, params={"sendToLedger": "true"})
-    voucher_id = result.get("value", {}).get("id")
-    if voucher_id:
-        logger.info("Voucher created (fallback) with ID: %d", voucher_id)
-        return result
-
-    logger.error("Voucher post failed after fallback: %s", result)
+    logger.error("Failed to create voucher: %s", result)
     return result
-
-
-# AR accounts that require a customer reference on postings
-_AR_ACCOUNTS = {str(n) for n in range(1500, 1600)}
 
 
 async def _resolve_customer_for_voucher(data: dict, client: TripletexClient) -> int | None:
@@ -474,17 +343,11 @@ async def _resolve_customer_for_voucher(data: dict, client: TripletexClient) -> 
     if not customer_name:
         return None
 
-    result = await client.get("/customer", params={"name": customer_name, "count": "10"})
+    result = await client.get("/customer", params={"customerName": customer_name, "count": "20"})
     for cust in result.get("values", []):
         if cust.get("name", "").lower() == customer_name.lower():
             logger.info("Resolved voucher customer '%s' -> id=%d", customer_name, cust["id"])
             return cust["id"]
-
-    # Fuzzy: return first result if any
-    values = result.get("values", [])
-    if values:
-        logger.info("Resolved voucher customer '%s' (fuzzy) -> id=%d", customer_name, values[0]["id"])
-        return values[0]["id"]
 
     logger.warning("Could not resolve customer '%s' for voucher", customer_name)
     return None
@@ -495,13 +358,6 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
 
     For general ledger entries that don't fit the supplier invoice pattern.
     Each posting needs: account (number), amount, description.
-
-    If the postings contain multiple balanced debit/credit pairs (e.g. from
-    a closing task), they are automatically split into separate vouchers.
-
-    B41 fix: If customerName/customerId is provided at the top level, it is
-    auto-attached to any postings on AR accounts (1500-1599) that don't already
-    have a customer reference. This prevents the 422 "Kunde mangler" error.
     """
     today = date.today().isoformat()
     voucher_date = data.get("date", today)
@@ -511,56 +367,28 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
     if not postings_data:
         return {"error": "No postings provided for voucher"}
 
-    # B41 fix: resolve customer for AR account postings
+    # Resolve customer once; _resolve_postings attaches it to CUSTOMER ledger lines.
     voucher_customer_id = await _resolve_customer_for_voucher(data, client)
-    if voucher_customer_id:
-        # Inject customer into any AR posting that doesn't already have one
-        for p in postings_data:
-            acc = str(p.get("account") or p.get("accountNumber") or "")
-            if acc in _AR_ACCOUNTS and not p.get("customerId"):
-                p["customerId"] = voucher_customer_id
-                logger.info("B41: Auto-attached customer %d to AR posting (account %s)", voucher_customer_id, acc)
 
     # B21 fix: resolve 0% VAT type to explicitly mark postings as no-VAT.
     # This prevents Tripletex from auto-generating system VAT postings on accounts
     # that have default VAT configuration (causes "systemgenererte" 422 errors).
     no_vat_type_id = await _resolve_no_vat_type(client)
 
-    # Auto-split: if LLM sent multiple journal entries as one call, split them
-    groups = _split_into_balanced_pairs(postings_data)
-    if len(groups) > 1:
-        logger.info("Auto-splitting %d postings into %d separate vouchers", len(postings_data), len(groups))
+    postings = await _resolve_postings(
+        postings_data,
+        voucher_date,
+        description,
+        client,
+        no_vat_type_id=no_vat_type_id,
+        voucher_customer_id=voucher_customer_id,
+    )
 
-    results = []
-    for i, group in enumerate(groups):
-        postings = await _resolve_postings(group, voucher_date, description, client, no_vat_type_id=no_vat_type_id, voucher_customer_id=voucher_customer_id)
-
-        voucher = {
-            "date": voucher_date,
-            "description": description,
-            "postings": postings,
-        }
-
-        logger.info("Creating voucher %d/%d with %d postings", i + 1, len(groups), len(postings))
-        result = await _post_voucher(voucher, client)
-        results.append(result)
-
-    # Return last result (or combined summary)
-    if len(results) == 1:
-        return results[0]
-
-    # Multiple vouchers — return summary
-    created_ids = [r.get("value", {}).get("id") for r in results if r.get("value", {}).get("id")]
-    failed = [r for r in results if not r.get("value", {}).get("id")]
-    summary = {
-        "message": f"Created {len(created_ids)}/{len(groups)} voucher(s)",
-        "voucherIds": created_ids,
+    voucher = {
+        "date": voucher_date,
+        "description": description,
+        "postings": postings,
     }
-    if failed:
-        summary["ok"] = False
-        summary["errors"] = [str(f) for f in failed]
-        summary["_needs_repair"] = (
-            f"{len(failed)} of {len(groups)} voucher(s) failed to create. "
-            "Retry each failed voucher individually using create_voucher with fewer postings, or use raw POST /ledger/voucher."
-        )
-    return summary
+
+    logger.info("Creating voucher with %d postings", len(postings))
+    return await _post_voucher(voucher, client)

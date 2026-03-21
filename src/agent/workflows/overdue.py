@@ -6,7 +6,7 @@ and returns customer info for downstream workflows (voucher, invoice, payment).
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from ..tripletex import TripletexClient
 
@@ -31,27 +31,40 @@ async def find_overdue_invoices(data: dict, client: TripletexClient) -> dict:
     - customer: resolved customer info from the overdue invoice
     """
     today = date.today().isoformat()
+    # invoiceDateTo is exclusive ("to and excluding"), so use tomorrow to include today
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
 
     # Fetch all invoices up to today with customer details expanded
     # invoiceDateFrom/invoiceDateTo are required by the API
     params = {
         "invoiceDateFrom": "2000-01-01",
-        "invoiceDateTo": today,
+        "invoiceDateTo": tomorrow,
         "count": "1000",
-        "fields": "id,invoiceNumber,invoiceDate,invoiceDueDate,amount,amountOutstanding,amountExcludingVat,isCreditNote,isCredited,customer(*)",
+        "fields": "id,invoiceNumber,invoiceDate,invoiceDueDate,amount,amountOutstanding,amountOutstandingTotal,amountExcludingVat,isCreditNote,isCredited,customer(*)",
     }
 
-    result = await client.get("/invoice", params)
-    all_invoices = result.get("values", [])
+    # Paginate to avoid missing invoices beyond the 1000 limit
+    all_invoices = []
+    page_from = 0
+    while True:
+        params["from"] = str(page_from)
+        result = await client.get("/invoice", params)
+        batch = result.get("values", [])
+        all_invoices.extend(batch)
+        if len(batch) < 1000:
+            break
+        page_from += len(batch)
 
     # Filter: overdue (dueDate < today) and still outstanding
+    # Use amountOutstandingTotal which includes reminder fees and partial remittances
     overdue = []
     for inv in all_invoices:
         if inv.get("isCreditNote") or inv.get("isCredited"):
             continue
         due_date = inv.get("invoiceDueDate", "")
-        outstanding = inv.get("amountOutstanding", 0)
+        outstanding = inv.get("amountOutstandingTotal") or inv.get("amountOutstanding", 0)
         if due_date and due_date < today and outstanding > 0:
+            inv["_isOverdue"] = True
             overdue.append(inv)
 
     if not overdue:
@@ -59,8 +72,9 @@ async def find_overdue_invoices(data: dict, client: TripletexClient) -> dict:
         for inv in all_invoices:
             if inv.get("isCreditNote") or inv.get("isCredited"):
                 continue
-            outstanding = inv.get("amountOutstanding", 0)
+            outstanding = inv.get("amountOutstandingTotal") or inv.get("amountOutstanding", 0)
             if outstanding > 0:
+                inv["_isOverdue"] = False
                 overdue.append(inv)
         if overdue:
             logger.info("No strictly overdue invoices found, but found %d with outstanding balance", len(overdue))
@@ -84,7 +98,11 @@ async def find_overdue_invoices(data: dict, client: TripletexClient) -> dict:
             else:
                 inv_name = ""
                 inv_org = ""
-            if customer_name and customer_name in inv_name:
+            # AND logic when both filters are provided
+            if customer_name and customer_org:
+                if customer_name in inv_name and inv_org == customer_org:
+                    filtered.append(inv)
+            elif customer_name and customer_name in inv_name:
                 filtered.append(inv)
             elif customer_org and inv_org == customer_org:
                 filtered.append(inv)
@@ -92,7 +110,7 @@ async def find_overdue_invoices(data: dict, client: TripletexClient) -> dict:
             overdue = filtered
 
     if min_amount:
-        overdue = [inv for inv in overdue if inv.get("amountOutstanding", 0) >= min_amount]
+        overdue = [inv for inv in overdue if (inv.get("amountOutstandingTotal") or inv.get("amountOutstanding", 0)) >= min_amount]
 
     # Sort by due date (most overdue first)
     overdue.sort(key=lambda inv: inv.get("invoiceDueDate", "9999-12-31"))
@@ -102,15 +120,11 @@ async def find_overdue_invoices(data: dict, client: TripletexClient) -> dict:
     # Return the most overdue invoice as primary result
     best = overdue[0]
 
-    # Fetch full customer details for the overdue invoice
+    # customer(*) expansion already gives full customer details — no extra call needed
     customer_info = best.get("customer") or {}
     customer_id = customer_info.get("id") if isinstance(customer_info, dict) else None
-    if customer_id:
-        try:
-            cust_result = await client.get(f"/customer/{customer_id}")
-            customer_info = cust_result.get("value", customer_info)
-        except Exception:
-            pass
+
+    best_outstanding = best.get("amountOutstandingTotal") or best.get("amountOutstanding")
 
     return {
         "value": best,
@@ -119,6 +133,6 @@ async def find_overdue_invoices(data: dict, client: TripletexClient) -> dict:
         "customerId": customer_id,
         "customerName": customer_info.get("name") if isinstance(customer_info, dict) else None,
         "invoiceId": best.get("id"),
-        "amountOutstanding": best.get("amountOutstanding"),
+        "amountOutstanding": best_outstanding,
         "invoiceDueDate": best.get("invoiceDueDate"),
     }

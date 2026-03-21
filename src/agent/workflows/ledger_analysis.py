@@ -5,7 +5,7 @@ Returns structured error list for Senior to create corrective vouchers via creat
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from ..tripletex import TripletexClient
 
@@ -31,9 +31,10 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
     """
     today = date.today()
     date_from = data.get("dateFrom", f"{today.year}-01-01")
-    date_to = data.get("dateTo", f"{today.year}-02-28")
+    # dateTo is EXCLUSIVE in Tripletex API ("to and excl.") — use Mar 1 to include all of Feb
+    date_to = data.get("dateTo", f"{today.year}-03-01")
 
-    logger.info("Analyzing ledger postings from %s to %s", date_from, date_to)
+    logger.info("Analyzing ledger postings from %s to %s (exclusive)", date_from, date_to)
 
     # Fetch all postings in the date range
     # Request expanded account fields so we get number+name (not just id+url)
@@ -48,9 +49,22 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
     if data.get("accountTo"):
         params["accountNumberTo"] = str(data["accountTo"])
 
-    result = await client.get("/ledger/posting", params=params)
-    postings = result.get("values", [])
-    logger.info("Fetched %d postings for analysis", len(postings))
+    # Paginate to avoid silent data loss
+    all_postings = []
+    offset = 0
+    page_size = 10000
+    while True:
+        params["from"] = str(offset)
+        params["count"] = str(page_size)
+        result = await client.get("/ledger/posting", params=params)
+        page = result.get("values", [])
+        all_postings.extend(page)
+        full_size = result.get("fullResultSize", len(page))
+        if offset + len(page) >= full_size or not page:
+            break
+        offset += len(page)
+    postings = all_postings
+    logger.info("Fetched %d postings for analysis (fullResultSize=%s)", len(postings), result.get("fullResultSize"))
 
     if not postings:
         return {"value": {"postings_count": 0, "errors_found": [], "summary": "No postings found in date range"}}
@@ -65,8 +79,9 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
     errors_found = []
 
     # Check 1: Imbalanced vouchers (debits should equal credits)
+    # Use 'amount' consistently — amountGross includes VAT which sits on separate posting lines
     for v_id, v_postings in vouchers.items():
-        total = sum(p.get("amountGross", p.get("amount", 0)) for p in v_postings)
+        total = sum(p.get("amount", 0) for p in v_postings)
         if abs(total) > 0.01:
             sample = v_postings[0]
             errors_found.append({
@@ -78,7 +93,7 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
                     {
                         "account": p.get("account", {}).get("number") if isinstance(p.get("account"), dict) else None,
                         "accountName": p.get("account", {}).get("name") if isinstance(p.get("account"), dict) else None,
-                        "amount": p.get("amountGross", p.get("amount", 0)),
+                        "amount": p.get("amount", 0),
                         "description": p.get("description", ""),
                     }
                     for p in v_postings
@@ -86,21 +101,23 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
                 "suggestion": f"Voucher {v_id} is out of balance by {round(total, 2)}. Create a corrective voucher.",
             })
 
-    # Check 2: Duplicate postings (same account + same absolute amount on same date, same voucher)
+    # Check 2: Duplicate postings (same account + same signed amount + same description, same voucher)
+    # No abs() — debit+credit to same account is a normal reversal, not a duplicate
     for v_id, v_postings in vouchers.items():
         seen = {}
         for p in v_postings:
             acct = p.get("account", {}).get("number") if isinstance(p.get("account"), dict) else "?"
-            amt = round(p.get("amountGross", p.get("amount", 0)), 2)
-            key = (acct, abs(amt), p.get("date", ""))
-            if key in seen and abs(amt) > 0:
+            amt = round(p.get("amount", 0), 2)
+            desc = (p.get("description") or "").strip()
+            key = (acct, amt, p.get("date", ""), desc)
+            if key in seen and amt != 0:
                 errors_found.append({
                     "type": "duplicate_posting",
                     "voucherId": v_id,
                     "account": acct,
                     "amount": amt,
                     "date": p.get("date", ""),
-                    "description": p.get("description", ""),
+                    "description": desc,
                     "suggestion": f"Account {acct} has duplicate posting of {amt} on {p.get('date', '')}. May need reversal.",
                 })
             seen[key] = p
@@ -118,16 +135,18 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
                 "postings": [
                     {
                         "account": p.get("account", {}).get("number") if isinstance(p.get("account"), dict) else None,
-                        "amount": p.get("amountGross", p.get("amount", 0)),
+                        "amount": p.get("amount", 0),
                     }
                     for p in v_postings
                 ],
                 "suggestion": f"Voucher {v_id} has VAT posting but no expense account. Possible missing expense line.",
             })
 
-    # Build summary with all postings grouped by voucher for Senior's context
+    # Build summaries only for flagged vouchers — avoids bloating response on busy ledgers
+    flagged_voucher_ids = {e["voucherId"] for e in errors_found}
     voucher_summaries = []
-    for v_id, v_postings in vouchers.items():
+    for v_id in flagged_voucher_ids:
+        v_postings = vouchers[v_id]
         voucher_summaries.append({
             "voucherId": v_id,
             "date": v_postings[0].get("date", ""),
@@ -136,7 +155,7 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
                 {
                     "account": p.get("account", {}).get("number") if isinstance(p.get("account"), dict) else None,
                     "accountName": p.get("account", {}).get("name") if isinstance(p.get("account"), dict) else None,
-                    "amount": p.get("amountGross", p.get("amount", 0)),
+                    "amount": p.get("amount", 0),
                     "description": p.get("description", ""),
                 }
                 for p in v_postings
@@ -178,19 +197,41 @@ async def compare_expenses(data: dict, client: TripletexClient) -> dict:
 
     logger.info("Comparing expenses for year %d via resultbudget/company", year)
 
-    params = {
-        "year": str(year),
-        "fields": "account(number,name),amount,accountingPeriod(*)",
-        "count": "10000",
-    }
-    if data.get("accountFrom"):
-        params["accountNumberFrom"] = str(data["accountFrom"])
-    if data.get("accountTo"):
-        params["accountNumberTo"] = str(data["accountTo"])
+    # /resultbudget/company does NOT accept accountNumberFrom/To — filter client-side
+    account_from = int(data["accountFrom"]) if data.get("accountFrom") else None
+    account_to = int(data["accountTo"]) if data.get("accountTo") else None
 
-    result = await client.get("/resultbudget/company", params=params)
-    entries = result.get("values", [])
-    logger.info("Fetched %d resultbudget entries", len(entries))
+    # Paginate resultbudget
+    all_entries = []
+    offset = 0
+    page_size = 10000
+    while True:
+        params = {
+            "year": str(year),
+            "fields": "account(number,name),amount,accountingPeriod(*)",
+            "from": str(offset),
+            "count": str(page_size),
+        }
+        result = await client.get("/resultbudget/company", params=params)
+        page = result.get("values", [])
+        all_entries.extend(page)
+        full_size = result.get("fullResultSize", len(page))
+        if offset + len(page) >= full_size or not page:
+            break
+        offset += len(page)
+
+    # Client-side account range filter
+    entries = []
+    for entry in all_entries:
+        acct = entry.get("account", {})
+        acct_num = acct.get("number") if isinstance(acct, dict) else None
+        if acct_num is not None:
+            if account_from and acct_num < account_from:
+                continue
+            if account_to and acct_num > account_to:
+                continue
+        entries.append(entry)
+    logger.info("Fetched %d resultbudget entries (%d after account filter)", len(all_entries), len(entries))
 
     if not entries:
         return {"value": {"entries_count": 0, "monthly_totals": {}, "top_accounts": [], "summary": "No resultbudget data found"}}

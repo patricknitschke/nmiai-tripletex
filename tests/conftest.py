@@ -232,8 +232,8 @@ def make_invoice(id=1, amount=10000, amount_outstanding=None, **kwargs):
     return inv
 
 
-def make_account(id=1, number=1920, name="Bank"):
-    return {"id": id, "number": number, "name": name}
+def make_account(id=1, number=1920, name="Bank", version=1):
+    return {"id": id, "version": version, "number": number, "name": name}
 
 
 def make_department(id=100, name="General"):

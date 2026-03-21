@@ -117,6 +117,27 @@ async def _resolve_activity(data: dict, client: TripletexClient, project_id: int
     return None
 
 
+async def _set_project_hourly_rate(project_id: int, rate: float, client: TripletexClient) -> None:
+    """Configure a fixed hourly rate on the project so timesheet entries become chargeable.
+
+    hourlyRate is readOnly on TimesheetEntry — it's derived from the project's rate config.
+    Must be set via POST /project/hourlyRates before registering time.
+    """
+    today = date.today().isoformat()
+    payload = {
+        "project": {"id": project_id},
+        "startDate": today,
+        "hourlyRateModel": "TYPE_FIXED_HOURLY_RATE",
+        "fixedRate": rate,
+        "showInProjectOrder": True,
+    }
+    result = await client.post("/project/hourlyRates", payload)
+    if result.get("value", {}).get("id"):
+        logger.info("Set hourly rate %.2f on project %d", rate, project_id)
+    else:
+        logger.warning("Failed to set hourly rate on project %d: %s", project_id, result)
+
+
 async def register_time(data: dict, client: TripletexClient) -> dict:
     """Register timesheet hours for an employee on a project activity.
 
@@ -127,7 +148,7 @@ async def register_time(data: dict, client: TripletexClient) -> dict:
     - hours: number of hours to register
     - date: date for the entry (defaults to today)
     - chargeableHours: billable hours (defaults to same as hours)
-    - hourlyRate: rate per hour (informational, set on project hourly rates)
+    - hourlyRate: rate per hour — sets project hourly rate config (NOT on entry directly)
     """
     today = date.today().isoformat()
     entry_date = data.get("date", today)
@@ -146,6 +167,11 @@ async def register_time(data: dict, client: TripletexClient) -> dict:
     project_id = await _resolve_project(data, client)
     if not project_id:
         return {"error": "Could not find project for timesheet entry"}
+
+    # Set hourly rate on project if provided (hourlyRate is readOnly on TimesheetEntry)
+    hourly_rate = data.get("hourlyRate") or data.get("rate")
+    if hourly_rate:
+        await _set_project_hourly_rate(project_id, float(hourly_rate), client)
 
     # Clamp entry_date to project startDate (Tripletex rejects entries before it)
     try:

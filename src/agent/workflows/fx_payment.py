@@ -5,8 +5,8 @@ paidAmount (NOK) + paidAmountCurrency (foreign) → post exchange
 difference voucher.
 
 Accounts:
-- 8060 Valutadifferanse (exchange loss = disagio, debit)
-- 8060 reversed for gain (agio, credit)
+- 8060 Valutatap (exchange loss = disagio, debit)
+- 8160 Valutagevinst (exchange gain = agio, credit)
 - 1500 Kundefordringer (accounts receivable — balancing entry)
 """
 
@@ -25,19 +25,25 @@ logger = logging.getLogger("agent.workflows.fx_payment")
 async def _lookup_currency_id(code: str, client: TripletexClient) -> int | None:
     """Resolve currency code (e.g. 'EUR') to Tripletex currency ID."""
     result = await client.get("/currency", params={"code": code, "count": "1"})
-    currencies = result.get("values", [])
-    for c in currencies:
+    for c in result.get("values", []):
         if c.get("code", "").upper() == code.upper():
             logger.info("Resolved currency %s → id=%d", code, c["id"])
             return c["id"]
-    # Fallback: search without code filter (some API versions don't support code param)
-    if not currencies:
-        result = await client.get("/currency", params={"count": "100"})
-        for c in result.get("values", []):
-            if c.get("code", "").upper() == code.upper():
-                logger.info("Resolved currency %s → id=%d (full scan)", code, c["id"])
-                return c["id"]
     logger.error("Could not resolve currency code: %s", code)
+    return None
+
+
+async def _get_exchange_rate_nok(currency_id: int, amount: float, rate_date: str, client: TripletexClient) -> float | None:
+    """Get NOK equivalent of a foreign currency amount using Tripletex official rates."""
+    result = await client.get(
+        f"/currency/{currency_id}/exchangeRate",
+        params={"amount": str(amount), "date": rate_date},
+    )
+    nok_amount = result.get("value")
+    if nok_amount is not None:
+        logger.info("Exchange rate API: %.2f foreign @ %s = %.2f NOK", amount, rate_date, float(nok_amount))
+        return round(float(nok_amount), 2)
+    logger.error("Exchange rate API failed for currency_id=%d, date=%s: %s", currency_id, rate_date, result)
     return None
 
 
@@ -48,8 +54,9 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
     - customerName / customerOrgNumber: to find the invoice
     - invoiceId / invoiceNumber: direct invoice reference
     - invoiceAmountForeign: original invoice amount in foreign currency
-    - invoiceRate: exchange rate at invoice time (e.g. 11.69 NOK/EUR)
-    - paymentRate: exchange rate at payment time (e.g. 11.28 NOK/EUR)
+    - invoiceRate: exchange rate at invoice time (optional — API lookup if omitted)
+    - paymentRate: exchange rate at payment time (optional — API lookup if omitted)
+    - invoiceDate: date of original invoice (for rate lookup when rates omitted)
     - paymentAmountForeign: amount paid in foreign currency (defaults to invoiceAmountForeign)
     - currency: currency code (e.g. EUR, USD, GBP)
     - paymentDate: date of payment
@@ -64,31 +71,40 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
     payment_amount_fx = data.get("paymentAmountForeign") or invoice_amount_fx
     currency = data.get("currency", "EUR")
     payment_date = data.get("paymentDate") or data.get("date") or today
+    invoice_date = data.get("invoiceDate") or today
     description = data.get("description", "")
 
-    if not invoice_amount_fx or not invoice_rate or not payment_rate:
-        return {"error": "Need invoiceAmountForeign, invoiceRate, and paymentRate"}
+    if not invoice_amount_fx:
+        return {"error": "Need invoiceAmountForeign"}
 
     invoice_amount_fx = float(invoice_amount_fx)
     payment_amount_fx = float(payment_amount_fx)
-    invoice_rate = float(invoice_rate)
-    payment_rate = float(payment_rate)
 
-    # Calculate amounts
-    invoice_nok = round(invoice_amount_fx * invoice_rate, 2)
-    payment_nok = round(payment_amount_fx * payment_rate, 2)
-    exchange_diff = round(invoice_nok - payment_nok, 2)  # positive = loss (disagio)
-
-    logger.info(
-        "FX payment: %.2f %s × %.4f = %.2f NOK (invoice) vs × %.4f = %.2f NOK (payment), diff = %.2f",
-        invoice_amount_fx, currency, invoice_rate, invoice_nok,
-        payment_rate, payment_nok, exchange_diff,
-    )
-
-    # Step 0: Resolve foreign currency ID (needed for invoice creation)
+    # Step 0: Resolve foreign currency ID
     currency_id = await _lookup_currency_id(currency, client)
     if not currency_id:
         return {"error": f"Could not resolve currency: {currency}"}
+
+    # Calculate NOK amounts — from provided rates or via Tripletex exchange rate API
+    if invoice_rate and payment_rate:
+        invoice_rate = float(invoice_rate)
+        payment_rate = float(payment_rate)
+        invoice_nok = round(invoice_amount_fx * invoice_rate, 2)
+        payment_nok = round(payment_amount_fx * payment_rate, 2)
+        logger.info(
+            "FX payment (manual rates): %.2f %s × %.4f = %.2f NOK (invoice) vs × %.4f = %.2f NOK (payment)",
+            invoice_amount_fx, currency, invoice_rate, invoice_nok, payment_rate, payment_nok,
+        )
+    else:
+        # Use Tripletex official exchange rates
+        logger.info("No rates provided — fetching from Tripletex exchange rate API for %s", currency)
+        invoice_nok = await _get_exchange_rate_nok(currency_id, invoice_amount_fx, invoice_date, client)
+        payment_nok = await _get_exchange_rate_nok(currency_id, payment_amount_fx, payment_date, client)
+        if invoice_nok is None or payment_nok is None:
+            return {"error": "Could not fetch exchange rates from API. Provide invoiceRate and paymentRate manually."}
+
+    exchange_diff = round(invoice_nok - payment_nok, 2)  # positive = loss (disagio)
+    logger.info("FX payment: invoice %.2f NOK, payment %.2f NOK, diff = %.2f", invoice_nok, payment_nok, exchange_diff)
 
     # Step 1: Find the invoice
     invoice = await _find_invoice(data, client)
@@ -171,22 +187,22 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
         return result
 
     if exchange_diff > 0:
-        # Loss (disagio): debit 8060 (expense), credit 1500 (AR)
+        # Loss (disagio): debit 8060 Valutatap, credit 1500 AR
         label = f"Disagio {currency} {description}".strip()
         postings = [
             {"account": 8060, "amountGross": exchange_diff, "description": label},
             {"account": 1500, "amountGross": -exchange_diff, "description": label, "customerId": customer_id},
         ]
-        logger.info("Posting disagio (loss): %.2f NOK to 8060", exchange_diff)
+        logger.info("Posting disagio (loss): %.2f NOK — debit 8060, credit 1500", exchange_diff)
     else:
-        # Gain (agio): debit 1500 (AR), credit 8060 (income)
+        # Gain (agio): debit 1500 AR, credit 8160 Valutagevinst
         gain = abs(exchange_diff)
         label = f"Agio {currency} {description}".strip()
         postings = [
             {"account": 1500, "amountGross": gain, "description": label, "customerId": customer_id},
-            {"account": 8060, "amountGross": -gain, "description": label},
+            {"account": 8160, "amountGross": -gain, "description": label},
         ]
-        logger.info("Posting agio (gain): %.2f NOK to 8060", gain)
+        logger.info("Posting agio (gain): %.2f NOK — debit 1500, credit 8160", gain)
 
     voucher_data = {
         "description": label,
@@ -205,7 +221,7 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
         result["voucher_error"] = voucher_result
         result["_needs_repair"] = (
             f"Payment registered but exchange difference voucher failed. "
-            f"Post manually: 8060 {'debit' if exchange_diff > 0 else 'credit'} {abs(exchange_diff)}, "
+            f"Post manually: {'8060' if exchange_diff > 0 else '8160'} {'debit' if exchange_diff > 0 else 'credit'} {abs(exchange_diff)}, "
             f"1500 {'credit' if exchange_diff > 0 else 'debit'} {abs(exchange_diff)}"
         )
 

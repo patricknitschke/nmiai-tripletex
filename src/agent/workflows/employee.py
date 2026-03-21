@@ -7,6 +7,13 @@ logger = logging.getLogger("agent.workflows.employee")
 
 ADMIN_KEYWORDS = {"administrator", "admin", "kontoadministrator", "administrateur", "administrador", "verwaltung"}
 
+# Fields that are readonly in the API and must not be sent in PUT requests
+_READONLY_FIELDS = {
+    "changes", "url", "displayName", "pictureId", "companyId",
+    "isAuthProjectOverviewForManager", "signatureStamp",
+    "hasAllowanceInSalary", "employments", "holidayAllowanceEarned",
+}
+
 
 def _is_admin_requested(data: dict) -> bool:
     """Check if any field in data signals admin role."""
@@ -22,16 +29,19 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
     email = data.get("email")
     existing_employee = None
     if email:
-        search = await client.get("/employee", params={"email": email, "count": "1"})
+        # email param is a substring/containing search — fetch multiple and verify exact match
+        search = await client.get("/employee", params={"email": email, "count": 25})
         existing = search.get("values", [])
-        if existing:
-            existing_employee = existing[0]
+        for emp in existing:
+            if emp.get("email", "").lower() == email.lower():
+                existing_employee = emp
+                break
 
     # Also search by name if no email match
     first_name = data.get("firstName", "")
     last_name = data.get("lastName", "")
     if not existing_employee and first_name and last_name:
-        search = await client.get("/employee", params={"firstName": first_name, "lastName": last_name, "count": "10"})
+        search = await client.get("/employee", params={"firstName": first_name, "lastName": last_name, "count": 10})
         candidates = search.get("values", [])
         for emp in candidates:
             if emp.get("firstName", "").lower() == first_name.lower() and emp.get("lastName", "").lower() == last_name.lower():
@@ -47,35 +57,39 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
             desired = data.get(field)
             if desired is not None and desired != existing_employee.get(field):
                 update_payload[field] = desired
-        # Phone fallback
+        # Phone fallback — map generic phoneNumber to mobile, and phoneNumberWork if provided
         if not update_payload.get("phoneNumberMobile") and data.get("phoneNumber"):
             if data["phoneNumber"] != existing_employee.get("phoneNumberMobile"):
                 update_payload["phoneNumberMobile"] = data["phoneNumber"]
-        # Check address
+        if data.get("phoneNumberWork"):
+            if data["phoneNumberWork"] != existing_employee.get("phoneNumberWork"):
+                update_payload["phoneNumberWork"] = data["phoneNumberWork"]
+        # Check address (including addressLine2)
         desired_addr = data.get("address")
         if desired_addr:
             existing_addr = existing_employee.get("address") or {}
-            for af in ("addressLine1", "postalCode", "city"):
-                dv = desired_addr.get(af, desired_addr.get("line1") if af == "addressLine1" else None)
+            for af in ("addressLine1", "addressLine2", "postalCode", "city"):
+                dv = desired_addr.get(af, desired_addr.get("line1") if af == "addressLine1" else (desired_addr.get("line2") if af == "addressLine2" else None))
                 if dv and dv != existing_addr.get(af):
                     if "address" not in update_payload:
-                        update_payload["address"] = {k: existing_addr.get(k, "") for k in ("addressLine1", "postalCode", "city")}
+                        update_payload["address"] = {k: existing_addr.get(k, "") for k in ("addressLine1", "addressLine2", "postalCode", "city")}
                     update_payload["address"][af] = dv
         # UserType upgrade if admin requested
         if _is_admin_requested(data) and existing_employee.get("userType") != "EXTENDED":
             update_payload["userType"] = "EXTENDED"
         if update_payload:
             logger.info("Updating employee %d with: %s", emp_id, list(update_payload.keys()))
-            put_body = {**existing_employee, **update_payload}
+            # Strip readonly fields to avoid sending them in PUT body
+            put_body = {k: v for k, v in {**existing_employee, **update_payload}.items() if k not in _READONLY_FIELDS}
             put_result = await client.put(f"/employee/{emp_id}", put_body)
-            if not put_result.get("value"):
+            if put_result.get("value"):
+                existing_employee = put_result["value"]  # PUT returns updated employee
+            else:
                 logger.warning("Employee %d update failed: %s", emp_id, put_result)
         # Grant admin entitlements if needed (even if no field update was needed)
         if _is_admin_requested(data):
             await _grant_admin_entitlements(emp_id, client)
-        # Re-fetch to return fresh state
-        fresh = await client.get(f"/employee/{emp_id}")
-        return fresh if fresh.get("value") else {"value": existing_employee}
+        return {"value": existing_employee}
 
     # Step 1: Ensure we have a department ID
     department_id = data.get("departmentId")
@@ -86,7 +100,7 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
         department_id = await resolve_or_create_department(department_name, client)
 
     if not department_id:
-        dept_result = await client.get("/department", params={"count": "1"})
+        dept_result = await client.get("/department", params={"count": 1})
         departments = dept_result.get("values", [])
         if departments:
             department_id = departments[0]["id"]
@@ -113,6 +127,8 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
     payload["email"] = email
     if data.get("phoneNumberMobile") or data.get("phoneNumber"):
         payload["phoneNumberMobile"] = data.get("phoneNumberMobile") or data["phoneNumber"]
+    if data.get("phoneNumberWork"):
+        payload["phoneNumberWork"] = data["phoneNumberWork"]
     if data.get("dateOfBirth"):
         payload["dateOfBirth"] = data["dateOfBirth"]
     if data.get("employeeNumber"):
@@ -125,6 +141,7 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
         addr = data["address"]
         payload["address"] = {
             "addressLine1": addr.get("line1", addr.get("addressLine1", "")),
+            "addressLine2": addr.get("line2", addr.get("addressLine2", "")),
             "postalCode": addr.get("postalCode", ""),
             "city": addr.get("city", ""),
         }
@@ -147,7 +164,10 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
 
 
 async def _grant_admin_entitlements(employee_id: int, client: TripletexClient) -> None:
-    """Grant ALL_PRIVILEGES to an employee via the entitlements endpoint."""
+    """Grant ALL_PRIVILEGES to an employee via the entitlements endpoint.
+
+    NOTE: PUT /employee/entitlement/:grantEntitlementsByTemplate is a BETA endpoint — subject to change.
+    """
     logger.info("Granting ALL_PRIVILEGES to employee %d", employee_id)
     ent_result = await client.put(
         "/employee/entitlement/:grantEntitlementsByTemplate",
