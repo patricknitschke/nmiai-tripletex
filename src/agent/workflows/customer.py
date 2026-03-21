@@ -18,11 +18,11 @@ async def create_customer(data: dict, client: TripletexClient) -> dict:
             logger.info("Customer already exists with org %s (id=%d)", org_number, existing[0]["id"])
             return {"value": existing[0]}
     elif name:
-        search = await client.get("/customer", params={"name": name, "count": "1"})
-        existing = search.get("values", [])
-        if existing:
-            logger.info("Customer already exists with name '%s' (id=%d)", name, existing[0]["id"])
-            return {"value": existing[0]}
+        search = await client.get("/customer", params={"name": name, "count": "10"})
+        for cust in search.get("values", []):
+            if cust.get("name", "").lower() == name.lower():
+                logger.info("Customer already exists with name '%s' (id=%d)", name, cust["id"])
+                return {"value": cust}
 
     # If isSupplier is set but isCustomer isn't explicitly provided, default isCustomer to false
     default_is_customer = not data.get("isSupplier", False)

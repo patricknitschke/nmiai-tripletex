@@ -301,4 +301,33 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "remunerationType", "type": "string", "required": False, "description": "MONTHLY_WAGE (default), HOURLY_WAGE, FEE"},
         ],
     },
+    "reconcile_bank_statement": {
+        "api_endpoint": "GET /invoice + PUT /invoice/{id}/:payment (bulk)",
+        "notes": (
+            "Reconciles a bank statement CSV against open invoices in Tripletex. "
+            "Pass the ENTIRE CSV content as csvContent — the workflow parses it internally, "
+            "matches incoming payments to customer invoices by amount, and registers payments. "
+            "Handles partial payments correctly. Use this for ANY bank reconciliation task (bankavsteming)."
+        ),
+        "fields": [
+            {"name": "csvContent", "type": "string", "required": True, "description": "The full CSV text from the bank statement file. Pass the entire file content."},
+        ],
+    },
+    "register_expense": {
+        "api_endpoint": "POST /ledger/voucher",
+        "notes": (
+            "Registers an expense from a receipt/kvittering as a voucher with correct VAT and department allocation. "
+            "Creates debit posting on expense account (with input VAT) and credit posting on bank account (1920). "
+            "Use this for receipt-based expense registration (kvittering/recibo/Quittung/reçu)."
+        ),
+        "fields": [
+            {"name": "description", "type": "string", "required": True, "description": "What the expense is for (e.g. 'Oppbevaringsboks')"},
+            {"name": "amountInclVat", "type": "number", "required": True, "description": "Total amount INCLUDING VAT from the receipt"},
+            {"name": "vatRate", "type": "number", "required": False, "description": "VAT rate in percent (default 25)"},
+            {"name": "expenseAccount", "type": "number", "required": True, "description": "Expense account number (e.g. 6540 inventar, 7140 reise)"},
+            {"name": "departmentName", "type": "string", "required": False, "description": "Department to allocate expense to"},
+            {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Receipt/expense date"},
+            {"name": "supplierName", "type": "string", "required": False, "description": "Who issued the receipt (e.g. 'Biltema')"},
+        ],
+    },
 }

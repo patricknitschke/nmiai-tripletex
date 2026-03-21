@@ -58,13 +58,13 @@ async def _ensure_customer(data: dict, client: TripletexClient) -> int | None:
         result = await create_customer(customer_data, client)
         return result.get("value", {}).get("id")
 
-    # Try to find by name
+    # Try to find by name — exact match
     customer_name = data.get("customerName")
     if customer_name:
-        search = await client.get("/customer", params={"name": customer_name, "count": "1"})
-        customers = search.get("values", [])
-        if customers:
-            return customers[0]["id"]
+        search = await client.get("/customer", params={"name": customer_name, "count": "10"})
+        for cust in search.get("values", []):
+            if cust.get("name", "").lower() == customer_name.lower():
+                return cust["id"]
         # Create minimal customer
         result = await create_customer({"name": customer_name}, client)
         return result.get("value", {}).get("id")

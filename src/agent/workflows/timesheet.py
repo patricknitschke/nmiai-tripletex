@@ -20,15 +20,15 @@ async def _resolve_employee(data: dict, client: TripletexClient) -> int | None:
             logger.info("Found employee by email %s (id=%d)", email, values[0]["id"])
             return values[0]["id"]
 
-    # Search by name
+    # Search by name — fetch multiple and exact match
     first = data.get("employeeFirstName") or data.get("firstName")
     last = data.get("employeeLastName") or data.get("lastName")
     if first and last:
-        result = await client.get("/employee", params={"firstName": first, "lastName": last, "count": "1"})
-        values = result.get("values", [])
-        if values:
-            logger.info("Found employee %s %s (id=%d)", first, last, values[0]["id"])
-            return values[0]["id"]
+        result = await client.get("/employee", params={"firstName": first, "lastName": last, "count": "10"})
+        for emp in result.get("values", []):
+            if emp.get("firstName", "").lower() == first.lower() and emp.get("lastName", "").lower() == last.lower():
+                logger.info("Found employee %s %s (id=%d)", first, last, emp["id"])
+                return emp["id"]
 
     # Fallback: get first employee
     result = await client.get("/employee", params={"count": "1"})
@@ -48,11 +48,11 @@ async def _resolve_project(data: dict, client: TripletexClient) -> int | None:
 
     project_name = data.get("projectName")
     if project_name:
-        result = await client.get("/project", params={"name": project_name, "count": "1"})
-        values = result.get("values", [])
-        if values:
-            logger.info("Found project '%s' (id=%d)", project_name, values[0]["id"])
-            return values[0]["id"]
+        result = await client.get("/project", params={"name": project_name, "count": "10"})
+        for proj in result.get("values", []):
+            if proj.get("name", "").lower() == project_name.lower():
+                logger.info("Found project '%s' (id=%d)", project_name, proj["id"])
+                return proj["id"]
 
     return None
 

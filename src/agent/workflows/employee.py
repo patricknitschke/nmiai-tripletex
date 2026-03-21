@@ -11,7 +11,7 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
     """Create an employee and optionally assign role via entitlements.
     If an employee with the same email already exists, returns the existing employee."""
 
-    # Step 0: Search for existing employee by email (competition accounts may have pre-configured users)
+    # Step 0: Search for existing employee by email or name
     email = data.get("email")
     if email:
         search = await client.get("/employee", params={"email": email, "count": "1"})
@@ -19,6 +19,18 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
         if existing:
             logger.info("Employee already exists with email %s (id=%d)", email, existing[0]["id"])
             return {"value": existing[0]}
+
+    # Also search by name if no email provided — employee may already exist
+    first_name = data.get("firstName", "")
+    last_name = data.get("lastName", "")
+    if not email and first_name and last_name:
+        search = await client.get("/employee", params={"firstName": first_name, "lastName": last_name, "count": "10"})
+        candidates = search.get("values", [])
+        # Exact match on both first and last name
+        for emp in candidates:
+            if emp.get("firstName", "").lower() == first_name.lower() and emp.get("lastName", "").lower() == last_name.lower():
+                logger.info("Employee already exists: %s %s (id=%d)", first_name, last_name, emp["id"])
+                return {"value": emp}
 
     # Step 1: Ensure we have a department ID
     department_id = data.get("departmentId")
@@ -58,8 +70,14 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
         "department": {"id": department_id},
     }
 
-    if data.get("email"):
-        payload["email"] = data["email"]
+    # Email is required by Tripletex — generate fallback if not provided
+    email = data.get("email")
+    if not email:
+        first = data.get("firstName", "user").lower().replace(" ", ".")
+        last = data.get("lastName", "unknown").lower().replace(" ", ".")
+        email = f"{first}.{last}@example.org"
+        logger.info("No email provided, using fallback: %s", email)
+    payload["email"] = email
     if data.get("phoneNumberMobile") or data.get("phoneNumber"):
         payload["phoneNumberMobile"] = data.get("phoneNumberMobile") or data["phoneNumber"]
     if data.get("dateOfBirth"):

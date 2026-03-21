@@ -52,15 +52,18 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
         customer_name = data.get("customerName")
         org_number = data.get("customerOrgNumber") or data.get("organizationNumber")
         if customer_name or org_number:
-            params = {"count": "1"}
             if org_number:
-                params["organizationNumber"] = org_number
+                customers = await client.get("/customer", params={"organizationNumber": org_number, "count": "1"})
+                customer_list = customers.get("values", [])
+                if customer_list:
+                    customer_id = customer_list[0]["id"]
             elif customer_name:
-                params["name"] = customer_name
-            customers = await client.get("/customer", params=params)
-            customer_list = customers.get("values", [])
-            if customer_list:
-                customer_id = customer_list[0]["id"]
+                customers = await client.get("/customer", params={"name": customer_name, "count": "10"})
+                for cust in customers.get("values", []):
+                    if cust.get("name", "").lower() == customer_name.lower():
+                        customer_id = cust["id"]
+                        break
+            if customer_id:
                 logger.info("Resolved customer '%s' → id=%d", customer_name or org_number, customer_id)
     if customer_id:
         payload["customer"] = {"id": customer_id}

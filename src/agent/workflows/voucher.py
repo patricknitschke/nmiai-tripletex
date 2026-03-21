@@ -23,20 +23,20 @@ async def _resolve_supplier(data: dict, client: TripletexClient) -> int | None:
             logger.info("Found existing supplier by org number %s (id=%d)", org_number, values[0]["id"])
             return values[0]["id"]
 
-    # Search by name
+    # Search by name — exact match
     if supplier_name:
-        result = await client.get("/customer", params={"name": supplier_name, "count": "1"})
-        values = result.get("values", [])
-        if values:
-            logger.info("Found existing supplier by name %s (id=%d)", supplier_name, values[0]["id"])
-            return values[0]["id"]
+        result = await client.get("/customer", params={"name": supplier_name, "count": "10"})
+        for cust in result.get("values", []):
+            if cust.get("name", "").lower() == supplier_name.lower():
+                logger.info("Found existing supplier by name %s (id=%d)", supplier_name, cust["id"])
+                return cust["id"]
 
     # Create supplier if we have enough info
     if supplier_name:
         payload = {"name": supplier_name, "isCustomer": False, "isSupplier": True}
         if org_number:
             payload["organizationNumber"] = org_number
-        result = await client.post("/customer", json=payload)
+        result = await client.post("/customer", payload)
         new_id = result.get("value", {}).get("id")
         if new_id:
             logger.info("Created supplier %s (id=%d)", supplier_name, new_id)
@@ -199,7 +199,7 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
         voucher["externalVoucherNumber"] = invoice_number
 
     logger.info("Creating voucher with %d postings", len(postings))
-    result = await client.post("/ledger/voucher", json=voucher, params={"sendToLedger": "true"})
+    result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
 
     voucher_id = result.get("value", {}).get("id")
     if voucher_id:
@@ -261,7 +261,7 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
     }
 
     logger.info("Creating manual voucher with %d postings", len(postings))
-    result = await client.post("/ledger/voucher", json=voucher, params={"sendToLedger": "true"})
+    result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
 
     voucher_id = result.get("value", {}).get("id")
     if voucher_id:

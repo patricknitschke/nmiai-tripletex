@@ -12,6 +12,8 @@ from .project import create_project
 from .voucher import create_supplier_invoice, create_voucher
 from .timesheet import register_time
 from .employment import register_employment
+from .bank_reconciliation import reconcile_bank_statement
+from .expense import register_expense
 
 # Map task_type → workflow function
 # Each workflow takes (data: dict, client: TripletexClient) and returns a result dict
@@ -34,4 +36,6 @@ WORKFLOWS: dict[str, callable] = {
     "create_voucher": create_voucher,
     "register_time": register_time,
     "register_employment": register_employment,
+    "reconcile_bank_statement": reconcile_bank_statement,
+    "register_expense": register_expense,
 }

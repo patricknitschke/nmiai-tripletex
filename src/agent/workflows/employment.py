@@ -55,7 +55,7 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
     }
 
     logger.info("Creating employment for employee %d (startDate=%s)", employee_id, start_date)
-    employment_result = await client.post("/employee/employment", json=employment_payload)
+    employment_result = await client.post("/employee/employment", employment_payload)
 
     employment_id = employment_result.get("value", {}).get("id")
     if not employment_id:
@@ -88,7 +88,7 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
 
     logger.info("Creating employment details: STYRK=%s, salary=%s, percentage=%s",
                 occupation_code, annual_salary, percentage)
-    details_result = await client.post("/employee/employment/details", json=details_payload)
+    details_result = await client.post("/employee/employment/details", details_payload)
 
     details_id = details_result.get("value", {}).get("id")
     if details_id:
@@ -105,7 +105,7 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
             "hoursPerDay": hours_per_day,
         }
         logger.info("Setting standard time: %.1f hours/day from %s", hours_per_day, start_date)
-        hours_result = await client.post("/employee/standardTime", json=hours_payload)
+        hours_result = await client.post("/employee/standardTime", hours_payload)
         hours_id = hours_result.get("value", {}).get("id")
         if hours_id:
             logger.info("Standard time created with ID: %d", hours_id)
