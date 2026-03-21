@@ -78,6 +78,9 @@ Always use lookup_api first to get the correct endpoint schema.
 - Chain workflows when needed: create customer first, then invoice, then payment. \
   Pass IDs from one result to the next.
 - Creating a SUPPLIER (leverandør/Lieferant/fournisseur) = create_customer with isSupplier: true.
+- **VAT:** Standard Norwegian VAT is 25%. Always include vatRatePercent: 25 on order lines \
+  unless the prompt explicitly states a different rate (15%, 12%, 0%) or says "exempt"/"fritatt"/"exonéré". \
+  Prices stated as "excl MVA/sin IVA/ohne MwSt/hors TVA" are excluding VAT — the 25% will be added on top.
 - If a call returns a 4xx error, use lookup_api to check correct fields, then retry ONCE.
 - Do NOT guess field names. Use lookup_api or the workflow specs above.
 - Be EFFICIENT and DECISIVE. Aim to complete the task in 3-5 tool calls.

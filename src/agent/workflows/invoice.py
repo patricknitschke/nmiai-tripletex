@@ -149,7 +149,7 @@ async def _build_order_lines(lines: list[dict], client: TripletexClient) -> list
         if line.get("unitPrice") is not None or line.get("unitPriceExcludingVatCurrency") is not None:
             ol["unitPriceExcludingVatCurrency"] = line.get("unitPriceExcludingVatCurrency", line.get("unitPrice"))
 
-        # Resolve VAT type: by ID, by rate percentage, or from extracted data
+        # Resolve VAT type: by ID, by rate percentage, or default to 25% standard Norwegian VAT
         vat = line.get("vatType") or line.get("vatTypeId")
         vat_rate = line.get("vatRatePercent")
         if isinstance(vat, int):
@@ -161,6 +161,12 @@ async def _build_order_lines(lines: list[dict], client: TripletexClient) -> list
             if vat_id:
                 ol["vatType"] = {"id": vat_id}
                 logger.info("Resolved VAT type: %s%% → id=%d", vat_rate, vat_id)
+        else:
+            # Default to 25% standard Norwegian VAT when no VAT specified
+            vat_id = await _lookup_vat_type_by_rate(25, client)
+            if vat_id:
+                ol["vatType"] = {"id": vat_id}
+                logger.info("No VAT specified, defaulting to 25%% → id=%d", vat_id)
 
         order_lines.append(ol)
     return order_lines
