@@ -157,8 +157,11 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
 
         desc_lower = desc.lower()
 
+        # Detect supplier keywords (multilingual)
+        is_supplier = any(kw in desc_lower for kw in ["leverand", "lieferant", "fournisseur", "fornecedor", "proveedor", "supplier"])
+
         # Type 1: Customer payment (Innbetaling)
-        if amount_in > 0 and ("innbetaling" in desc_lower or "betaling" in desc_lower and "leverand" not in desc_lower):
+        if amount_in > 0 and ("innbetaling" in desc_lower or ("betaling" in desc_lower and not is_supplier)):
             # Try to match by amount to an unpaid invoice
             matched = None
             for inv in all_invoices:
@@ -205,8 +208,8 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                 logger.warning("No matching invoice for customer payment: %s (%.2f)", desc, amount_in)
                 results["skipped"].append({"description": desc, "amount": amount_in, "reason": "no matching invoice"})
 
-        # Type 2: Supplier payment (Betaling Leverandør)
-        elif amount_out > 0 and "leverand" in desc_lower:
+        # Type 2: Supplier payment (Betaling Leverandør/Lieferant/fournisseur)
+        elif amount_out > 0 and is_supplier:
             # For now, log as skipped — supplier invoice payment needs supplierInvoice ID
             logger.warning("Supplier payment not yet supported: %s (%.2f)", desc, amount_out)
             results["skipped"].append({"description": desc, "amount": amount_out, "reason": "supplier payment not implemented"})

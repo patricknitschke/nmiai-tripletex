@@ -1,5 +1,6 @@
 """LLM abstraction layer — supports Anthropic (Claude) and Vertex AI (Gemini)."""
 
+import asyncio
 import json
 import logging
 import os
@@ -59,14 +60,28 @@ async def _vertex_complete(
     client = genai.Client(vertexai=True, project=project, location=location)
 
     parts = _to_gemini_parts(user_content)
-    response = await client.aio.models.generate_content(
-        model=model,
-        contents=parts,
-        config=genai.types.GenerateContentConfig(
-            system_instruction=system,
-            max_output_tokens=max_tokens,
-        ),
-    )
+
+    # Retry on 429 rate limit
+    response = None
+    for attempt in range(3):
+        try:
+            response = await client.aio.models.generate_content(
+                model=model,
+                contents=parts,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=system,
+                    max_output_tokens=max_tokens,
+                ),
+            )
+            break
+        except Exception as e:
+            if "429" in str(e) and attempt < 2:
+                wait = (attempt + 1) * 3
+                logger.warning("[Complete] 429 rate limited, retrying in %ds (attempt %d/3)", wait, attempt + 1)
+                await asyncio.sleep(wait)
+            else:
+                raise
+
     return response.text.strip()
 
 
@@ -181,15 +196,30 @@ async def _vertex_tool_loop(
 
         logger.info("[Tool loop iteration %d] Calling %s...", iteration + 1, model)
 
-        response = await client.aio.models.generate_content(
-            model=model,
-            contents=contents,
-            config=genai.types.GenerateContentConfig(
-                system_instruction=system,
-                max_output_tokens=4096,
-                tools=gemini_tools,
-            ),
-        )
+        # Retry on 429 rate limit (up to 2 retries with backoff)
+        response = None
+        for attempt in range(3):
+            try:
+                response = await client.aio.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=genai.types.GenerateContentConfig(
+                        system_instruction=system,
+                        max_output_tokens=4096,
+                        tools=gemini_tools,
+                    ),
+                )
+                break
+            except Exception as e:
+                if "429" in str(e) and attempt < 2:
+                    wait = (attempt + 1) * 3
+                    logger.warning("[Tool loop] 429 rate limited, retrying in %ds (attempt %d/3)", wait, attempt + 1)
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+
+        if response is None:
+            return {"status": "error", "iterations": iteration, "warning": "LLM call failed"}
 
         # Check for function calls (guard against empty/blocked responses)
         parts = response.candidates[0].content.parts if response.candidates and response.candidates[0].content and response.candidates[0].content.parts else []

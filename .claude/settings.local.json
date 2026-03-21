@@ -115,7 +115,8 @@
       "Bash(.venv/bin/python -c \"from src.agent.workflows import WORKFLOWS; from src.agent.orchestrator import solve_task; print\\(''All imports OK, %d workflows'' % len\\(WORKFLOWS\\)\\)\")",
       "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''POST /supplierInvoice/{invoiceId}/:addPayment''\\)\\)\")",
       "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''GET /supplierInvoice''\\)\\)\")",
-      "Bash(.venv/bin/python -c \"from src.agent.workflows import WORKFLOWS; print\\(''OK:'', len\\(WORKFLOWS\\)\\)\")"
+      "Bash(.venv/bin/python -c \"from src.agent.workflows import WORKFLOWS; print\\(''OK:'', len\\(WORKFLOWS\\)\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.llm.client import complete, tool_use_loop; print\\(''LLM client OK''\\)\")"
     ]
   },
   "enabledMcpjsonServers": [
