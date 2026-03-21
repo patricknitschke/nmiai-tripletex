@@ -94,8 +94,11 @@ Return ONLY valid JSON:
   a 'customer' object with name and organizationNumber. Include 3 order lines \
   with product numbers and VAT rates from the prompt."
 - Creating a SUPPLIER (leverandør/Lieferant/fournisseur) = create_customer with isSupplier: true.
-- **VAT:** Standard Norwegian VAT is 25%. Tell sub-agents to include vatRatePercent: 25 \
-  unless the prompt explicitly states a different rate or says "exempt"/"fritatt"/"exonéré".
+- **VAT:** Standard Norwegian VAT is 25%. ALWAYS use vatRatePercent: 25 unless the prompt \
+  explicitly says "exempt"/"fritatt"/"exonéré"/"0% MVA"/"sin impuestos". \
+  IMPORTANT: "sin IVA"/"ohne MwSt"/"excl MVA"/"hors TVA"/"eksklusiv MVA" means the PRICE \
+  is stated excluding VAT — it does NOT mean 0% VAT. The 25% rate still applies. \
+  Only use vatRatePercent: 0 when the prompt explicitly says the service is TAX EXEMPT.
 - For tasks that don't match any workflow, use suggested_workflow: "fallback".
 - Most tasks need only 1 step — many workflows handle prerequisites internally.
 """

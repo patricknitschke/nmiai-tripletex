@@ -34,7 +34,7 @@ POST /solve (100s deadline)
 - Safety net: bad Chief plans (e.g. "can't proceed") are detected and bypassed
 
 ## Current Phase
-Phase 14: Workflow hardening — IN PROGRESS. Next: deploy + test, then 14c/14h/14i/14j, then Phase 15 (T3 workflows).
+Phase 15: T2/T3 workflows — COMPLETE (W3 + W6 built). Next: deploy + test new workflows, then iterate based on scores.
 
 **Session 2026-03-21 summary of ALL changes (not yet fully deployed):**
 
@@ -178,7 +178,7 @@ Make workflows self-contained so they don't depend on Chief planning correctly.
 **Critical (costing points NOW):**
 - [x] **14a: Self-contained credit_note** — searches for existing invoice by customer, creates if not found
 - [x] **14b: Self-contained register_payment** — searches for existing invoice, uses actual invoice amount (incl VAT) for full payment
-- [ ] **14c: Fix delete_travel_expense schema** — add title + employeeEmail fields (workflow already updated)
+- [x] **14c: Fix delete_travel_expense schema** — add title + employeeEmail fields
 - [x] **14d: Customer search-before-create** — standalone create_customer now checks for duplicates
 - [x] **14e: Project customer resolution** — resolves customerName/orgNumber → ID
 - [x] **14f: Product VAT fix** — uses 25% Utgående type, not just first result
@@ -187,17 +187,24 @@ Make workflows self-contained so they don't depend on Chief planning correctly.
 **Medium:**
 - [ ] **14h: Trim workflow results** — return key fields only (id, amount, customer.id) to reduce context flooding
 - [ ] **14i: Fix _ensure_customer in invoice.py** — search by org number before creating (currently only searches by name)
-- [ ] **14j: Update create_project schema** — add customerName/customerOrgNumber fields
+- [x] **14j: Update create_project schema** — added customerName/customerOrgNumber fields
 
-### Phase 15: Missing Workflows (T2/T3)
-Priority order based on competition logs:
-- [ ] **W3: Time registration** — POST /timesheet/entry (seen in PT prompts, agent spiraled 9 iterations)
-- [ ] **W4: Project invoice** — from registered hours (always paired with W3)
-- [ ] **W6: Manual voucher** — POST /ledger/voucher (needed for AP + dimensions tasks)
-- [ ] **W2: Supplier invoice (AP)** — voucher with debit/credit postings
-- [ ] **W1: Payroll** — salary API endpoints unknown
-- [ ] **W5: Custom dimensions** — dimension API endpoints unknown
+### Phase 15: Missing Workflows (T2/T3) — MOSTLY COMPLETE
+Built 3 new workflows (14 total). Agent now handles supplier invoices and timesheet tasks that previously timed out.
+
+- [x] **W3: Time registration** — `register_time` workflow. Resolves employee/project/activity by name/email, POST /timesheet/entry
+- [ ] **W4: Project invoice** — from registered hours (always paired with W3). Needs research.
+- [x] **W6: Manual voucher** — `create_voucher` workflow. Custom postings with account resolution.
+- [x] **W2: Supplier invoice (AP)** — `create_supplier_invoice` workflow. Auto-creates supplier, resolves expense account + input VAT, builds debit/credit postings, POST /ledger/voucher.
+- [ ] **W1: Payroll** — salary API endpoints unknown, needs research
+- [ ] **W5: Custom dimensions** — dimension API endpoints unknown, needs research
 - [ ] Iterate based on leaderboard scores
+
+**New workflow files:**
+```
+src/agent/workflows/voucher.py    # create_supplier_invoice + create_voucher
+src/agent/workflows/timesheet.py  # register_time
+```
 
 ## Key Decisions
 | Decision | Rationale |
@@ -240,6 +247,27 @@ Priority order based on competition logs:
 
 **Low priority (Chief mode):**
 6. Chief QoL improvements (9k/9l) — deferred while Senior is default.
+
+### Phase 16: Task Logging + Analysis
+Track every competition prompt and result in `docs/tasks.csv` for pattern analysis.
+
+**CSV columns:**
+- `timestamp` — when the task was received
+- `prompt` — full task prompt text
+- `language` — detected language (NO, EN, DE, FR, ES, PT, NL)
+- `task_type` — what workflow(s) were used (e.g. create_invoice, register_payment)
+- `model` — LLM model used
+- `time_s` — total execution time in seconds
+- `api_calls` — number of API calls made
+- `api_errors` — number of 4xx errors
+- `checks_passed` — e.g. "3/5"
+- `checks_failed` — e.g. "2/5"
+- `status` — success / partial / fail / timeout
+- `notes` — what went wrong or notable observations
+
+- [ ] **16a: Create docs/tasks.csv** with headers
+- [ ] **16b: Backfill from logs** — add all prompts from last night's testing
+- [ ] **16c: Keep logging** — add every new prompt as we test today
 
 ## Notes
 - Competition is LIVE (March 19-22, 2026)

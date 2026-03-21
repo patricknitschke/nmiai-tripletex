@@ -1,1 +1,0 @@
-curl https://pining-for-the-woods-tripletex-v06-370009516620.europe-north1.run.app/health

@@ -9,6 +9,8 @@ from .payment import register_payment
 from .credit_note import create_credit_note
 from .travel_expense import create_travel_expense, delete_travel_expense
 from .project import create_project
+from .voucher import create_supplier_invoice, create_voucher
+from .timesheet import register_time
 
 # Map task_type → workflow function
 # Each workflow takes (data: dict, client: TripletexClient) and returns a result dict
@@ -26,4 +28,8 @@ WORKFLOWS: dict[str, callable] = {
     "create_travel_expense": create_travel_expense,
     "delete_travel_expense": delete_travel_expense,
     "create_project": create_project,
+    # Tier 3
+    "create_supplier_invoice": create_supplier_invoice,
+    "create_voucher": create_voucher,
+    "register_time": register_time,
 }

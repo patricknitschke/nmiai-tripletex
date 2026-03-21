@@ -1,4 +1,5 @@
-gcloud run deploy pining-for-the-woods-tripletex-v12 \
+VERSION=${1:-v13}
+gcloud run deploy "pining-for-the-woods-tripletex-${VERSION}" \
   --source . \
   --region europe-north1 \
   --allow-unauthenticated \

@@ -208,6 +208,69 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "customerId", "type": "integer", "required": False, "description": "Customer ID to link this project to"},
             {"name": "departmentId", "type": "integer", "required": False, "description": "Department ID"},
             {"name": "mainProjectId", "type": "integer", "required": False, "description": "Parent project ID if this is a sub-project"},
+            {"name": "customerName", "type": "string", "required": False, "description": "Customer name (resolved to ID by workflow)"},
+            {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Customer org number (resolved to ID by workflow)"},
+        ],
+    },
+    "create_supplier_invoice": {
+        "api_endpoint": "POST /ledger/voucher",
+        "notes": (
+            "Registers an incoming supplier invoice (leverandorfaktura / inngaende faktura) as a voucher. "
+            "The workflow auto-creates the supplier if needed, resolves accounts, and builds correct debit/credit postings. "
+            "Use this for ANY incoming invoice from a supplier/vendor. "
+            "The amountInclVat is the total the supplier is charging (including VAT). "
+            "The workflow calculates the VAT split automatically."
+        ),
+        "fields": [
+            {"name": "supplierName", "type": "string", "required": True, "description": "Supplier/vendor name"},
+            {"name": "supplierOrgNumber", "type": "string", "required": False, "description": "Supplier organization number"},
+            {"name": "invoiceNumber", "type": "string", "required": False, "description": "Supplier's invoice reference (e.g. INV-2026-2076)"},
+            {"name": "amountInclVat", "type": "number", "required": False, "description": "Total amount INCLUDING VAT (inklusiv MVA)"},
+            {"name": "amountExclVat", "type": "number", "required": False, "description": "Amount EXCLUDING VAT (if given instead of incl)"},
+            {"name": "vatRate", "type": "number", "required": False, "description": "VAT rate in percent (default 25). Use 0 for exempt."},
+            {"name": "expenseAccount", "type": "number", "required": True, "description": "Expense account number (e.g. 7300 for office services, 6300 for consulting)"},
+            {"name": "description", "type": "string", "required": False, "description": "What the invoice is for"},
+            {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Invoice date (defaults to today)"},
+        ],
+    },
+    "create_voucher": {
+        "api_endpoint": "POST /ledger/voucher",
+        "notes": (
+            "Creates a manual journal entry / voucher with custom postings. "
+            "Use this for general ledger entries, corrections, or accounting entries "
+            "that don't fit other workflow patterns. Each posting is a debit (positive amount) "
+            "or credit (negative amount) on an account."
+        ),
+        "fields": [
+            {"name": "description", "type": "string", "required": True, "description": "Voucher description"},
+            {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Voucher date (defaults to today)"},
+            {"name": "postings", "type": "array of objects", "required": True, "description": "List of posting lines", "items": [
+                {"name": "account", "type": "number", "required": True, "description": "Account number (e.g. 6300, 2400)"},
+                {"name": "amount", "type": "number", "required": True, "description": "Amount: positive = debit, negative = credit"},
+                {"name": "description", "type": "string", "required": False, "description": "Posting description"},
+                {"name": "dimensionId", "type": "integer", "required": False, "description": "Accounting dimension value ID to link this posting to (from /ledger/accountingDimensionValue)"},
+                {"name": "dimensionIndex", "type": "integer", "required": False, "description": "Which dimension slot (1, 2, or 3) — defaults to 1"},
+            ]},
+        ],
+    },
+    "register_time": {
+        "api_endpoint": "POST /timesheet/entry",
+        "notes": (
+            "Registers timesheet hours for an employee on a project activity. "
+            "The workflow resolves employee, project, and activity by name/email. "
+            "Only one entry per employee/date/activity/project combination is allowed. "
+            "The employee and project must exist first (use create_employee and create_project workflows)."
+        ),
+        "fields": [
+            {"name": "employeeEmail", "type": "string", "required": False, "description": "Employee email to identify them"},
+            {"name": "employeeFirstName", "type": "string", "required": False, "description": "Employee first name"},
+            {"name": "employeeLastName", "type": "string", "required": False, "description": "Employee last name"},
+            {"name": "projectName", "type": "string", "required": False, "description": "Project name to register hours on"},
+            {"name": "projectId", "type": "integer", "required": False, "description": "Project ID (if known)"},
+            {"name": "activityName", "type": "string", "required": False, "description": "Activity name (e.g. 'Utvikling', 'Konsultering')"},
+            {"name": "hours", "type": "number", "required": True, "description": "Number of hours to register"},
+            {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Date for the entry (defaults to today)"},
+            {"name": "chargeableHours", "type": "number", "required": False, "description": "Billable hours (defaults to same as hours)"},
         ],
     },
 }
