@@ -58,4 +58,8 @@ class TripletexClient:
         else:
             logger.info("[API %d] %s %s OK", response.status_code, method, endpoint)
 
-        return response.json()
+        try:
+            return response.json()
+        except Exception:
+            # Non-JSON response (e.g. HTML 404 page)
+            return {"error": f"Non-JSON response ({response.status_code})", "status": response.status_code}

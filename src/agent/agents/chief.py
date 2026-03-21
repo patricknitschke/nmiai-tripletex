@@ -21,19 +21,10 @@ logger = logging.getLogger("agent.chief")
 # ---------------------------------------------------------------------------
 
 def build_workflow_catalog() -> str:
-    """Generate a concise workflow reference for the Chief's system prompt."""
+    """Generate a slim workflow reference for the Chief. Names + notes only, no field specs."""
     lines = []
     for task_type, schema in TASK_SCHEMAS.items():
-        lines.append(f"### {task_type}")
-        lines.append(f"  Endpoint: {schema['api_endpoint']}")
-        lines.append(f"  Notes: {schema['notes']}")
-        for field in schema["fields"]:
-            req = "REQUIRED" if field.get("required") else "optional"
-            lines.append(f"  - {field['name']} ({field['type']}, {req}): {field['description']}")
-            if "items" in field:
-                for item in field["items"]:
-                    lines.append(f"      - {item['name']} ({item['type']}): {item['description']}")
-        lines.append("")
+        lines.append(f"- **{task_type}**: {schema['notes']}")
     return "\n".join(lines)
 
 

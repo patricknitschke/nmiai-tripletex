@@ -51,20 +51,36 @@ async def _resolve_vat_type(client: TripletexClient, rate: float, direction: str
     result = await client.get("/ledger/vatType", params={"count": "100"})
     vat_types = result.get("values", [])
 
-    keyword = "Inngående" if direction == "input" else "Utgående"
+    keyword = "inngående" if direction == "input" else "utgående"
 
+    # First pass: match by keyword + rate
     for vt in vat_types:
-        name = vt.get("name", "")
+        name = vt.get("name", "").lower()
         pct = vt.get("percentage", 0)
         if keyword in name and abs(pct - rate) < 0.01:
-            logger.info("Resolved %s VAT type: %.1f%% -> id=%d (%s)", direction, rate, vt["id"], name)
+            logger.info("Resolved %s VAT type: %.1f%% -> id=%d (%s)", direction, rate, vt["id"], vt.get("name"))
             return vt["id"]
 
-    # Fallback: match by percentage only
+    # Second pass: try alternate keywords (some systems use different names)
+    alt_keywords = {
+        "input": ["innkommende", "fradrag", "input"],
+        "output": ["utgående", "salg", "output"],
+    }
+    for alt in alt_keywords.get(direction, []):
+        for vt in vat_types:
+            name = vt.get("name", "").lower()
+            pct = vt.get("percentage", 0)
+            if alt in name and abs(pct - rate) < 0.01:
+                logger.info("Resolved %s VAT type (alt '%s'): %.1f%% -> id=%d (%s)", direction, alt, rate, vt["id"], vt.get("name"))
+                return vt["id"]
+
+    # Last resort: match by rate only but EXCLUDE the wrong direction
+    wrong_keyword = "utgående" if direction == "input" else "inngående"
     for vt in vat_types:
+        name = vt.get("name", "").lower()
         pct = vt.get("percentage", 0)
-        if abs(pct - rate) < 0.01:
-            logger.info("Resolved VAT type by rate only: %.1f%% -> id=%d", rate, vt["id"])
+        if abs(pct - rate) < 0.01 and wrong_keyword not in name:
+            logger.info("Resolved VAT type by rate (excluding %s): %.1f%% -> id=%d (%s)", wrong_keyword, rate, vt["id"], vt.get("name"))
             return vt["id"]
 
     logger.warning("Could not find VAT type for %.1f%% (%s)", rate, direction)

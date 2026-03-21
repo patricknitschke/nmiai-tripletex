@@ -91,6 +91,10 @@ Always use lookup_api first to get the correct endpoint schema.
   CRITICAL: "sin IVA"/"ohne MwSt"/"excl MVA"/"hors TVA"/"eksklusiv MVA" means the PRICE is stated \
   excluding VAT — it does NOT mean 0% VAT. The 25% rate STILL applies. \
   Even if the Chief's plan says vatRatePercent: 0, OVERRIDE it to 25 unless the prompt says EXEMPT.
+- **Employment contracts (tilbudsbrev/arbeidskontrakt/carta de oferta/Arbeitsvertrag):** Use register_employment. \
+  Extract ALL fields from the PDF: firstName, lastName, dateOfBirth, nationalIdentityNumber, bankAccountNumber, \
+  departmentName, startDate, occupationCode (STYRK/yrkeskode — a 4-digit code like "2411"), \
+  percentageOfFullTimeEquivalent, annualSalary, hoursPerDay. Don't skip any field that's in the document.
 - If a call returns a 4xx error, use lookup_api to check correct fields, then retry ONCE.
 - Do NOT guess field names. Use lookup_api or the workflow specs above.
 - Be EFFICIENT and DECISIVE. Aim to complete the task in 3-5 tool calls.

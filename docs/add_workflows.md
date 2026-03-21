@@ -99,6 +99,21 @@ Tracking new workflows and enhancements needed based on competition task logs.
 - **Priority:** Low — may appear in T3
 - **API:** POST /supplierInvoice/{invoiceId}/:addPayment
 
+### W11: Ledger Error Correction (corrective entries)
+- **Status:** SEEN — 0/4, needs dedicated workflow
+- **Priority:** Medium — T3 task, 4 checks
+- **API:** GET /ledger/voucher + GET /ledger/posting + POST /ledger/voucher (corrective)
+- **Example prompt (FR):** "Nous avons découvert des erreurs dans le grand livre... une écriture sur le mauvais compte (6500 au lieu de 6540, 6800 NOK), une pièce en double (7000, 1300 NOK), une ligne de TVA manquante (4300, 17300 NOK HT), et un montant incorrect (6300, 10150 au lieu de 7450 NOK). Corrigez avec des écritures correctives."
+- **What went wrong (v17):**
+  1. Chief timed out on complex French prompt (no PDF, just long reasoning needed)
+  2. Senior fetched each voucher twice (without fields, then with fields=*) — wasted 40s
+  3. Never created any corrective entries — ran out of time after 3 iterations of reading
+- **What the workflow needs:**
+  1. Accept a list of errors: {type: "wrong_account"|"duplicate"|"missing_vat"|"wrong_amount", account, amount, correctAccount, correctAmount}
+  2. Search voucher postings by account + amount to find the erroneous entry
+  3. Create corrective voucher: reverse original posting + post correct one
+  4. Handle 4 error types: wrong account → repost to correct account, duplicate → reverse it, missing VAT → add VAT posting, wrong amount → reverse + repost correct amount
+
 ## Completed Workflows (14 total)
 
 | Workflow | Phase | Task Types |

@@ -48,7 +48,9 @@ async def _run_hybrid_mode(
     logger.info("=" * 40)
     logger.info("HYBRID MODE: Chief planning...")
     try:
-        thinking, steps = await asyncio.wait_for(chief_plan(prompt, files), timeout=30.0)
+        # Don't pass files (PDFs/CSVs) to Chief — it only needs the text prompt to plan.
+        # Senior gets the full files for data extraction.
+        thinking, steps = await asyncio.wait_for(chief_plan(prompt, []), timeout=30.0)
     except asyncio.TimeoutError:
         logger.warning("Chief planning timed out after 30s — skipping to Senior")
         return await run_senior_accountant(prompt, files, client, deadline=deadline)

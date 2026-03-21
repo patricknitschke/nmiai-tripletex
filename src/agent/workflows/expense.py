@@ -2,6 +2,7 @@ import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
+from .voucher import _resolve_vat_type
 
 logger = logging.getLogger("agent.workflows.expense")
 
@@ -69,14 +70,7 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     # Resolve input VAT type
     vat_type_id = None
     if vat_rate > 0:
-        vat_result = await client.get("/ledger/vatType", params={"count": "100"})
-        for vt in vat_result.get("values", []):
-            name = vt.get("name", "")
-            pct = vt.get("percentage", 0)
-            if "Inngående" in name and abs(pct - vat_rate) < 0.01:
-                vat_type_id = vt["id"]
-                logger.info("Resolved input VAT: %.0f%% -> id=%d", vat_rate, vat_type_id)
-                break
+        vat_type_id = await _resolve_vat_type(client, vat_rate, "input")
 
     # Resolve department
     department_id = data.get("departmentId")
