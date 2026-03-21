@@ -41,9 +41,18 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
             update_payload["isInternal"] = data["isInternal"]
         if data.get("isFixedPrice") is not None and data["isFixedPrice"] != existing_project.get("isFixedPrice"):
             update_payload["isFixedPrice"] = data["isFixedPrice"]
+        # Check fixedprice amount (data may use either casing)
+        desired_fp = data.get("fixedprice") or data.get("fixedPrice")
+        if desired_fp is not None and desired_fp != existing_project.get("fixedprice"):
+            update_payload["fixedprice"] = desired_fp
+            update_payload["isFixedPrice"] = True
         if update_payload:
             logger.info("Updating project %d with: %s", proj_id, list(update_payload.keys()))
             put_body = {**existing_project, **update_payload}
+            # Strip fields that Tripletex rejects on PUT (must use separate endpoints)
+            for field in ("projectHourlyRates", "participants", "projectActivities",
+                          "orderLines", "invoicingPlan", "preliminaryInvoice"):
+                put_body.pop(field, None)
             put_result = await client.put(f"/project/{proj_id}", put_body)
             return put_result if put_result.get("value") else {"value": existing_project, "update_error": put_result}
         logger.info("Project %d already matches desired state", proj_id)

@@ -256,9 +256,9 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
         logger.info("Invoice created with ID: %d", invoice_id)
 
         # Free GET: verify invoice lines and amounts
-        verify = await client.get(f"/invoice/{invoice_id}", params={"fields": "id,amount,amountOutstanding,invoiceLines(*)"})
+        verify = await client.get(f"/invoice/{invoice_id}", params={"fields": "id,amount,amountOutstanding,orderLines(*)"})
         actual = verify.get("value", {})
-        actual_lines = actual.get("invoiceLines", [])
+        actual_lines = actual.get("orderLines", [])
         expected_line_count = len(order_lines)
         warnings = []
         if len(actual_lines) != expected_line_count:
