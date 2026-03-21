@@ -17,7 +17,7 @@ POST /solve (100s deadline)
     - Passes IDs between workflow calls
 ```
 
-**18 workflows** covering T1/T2/T3 tasks. See `docs/add_workflows.md` for backlog.
+**19 workflows** covering T1/T2/T3 tasks. See `docs/add_workflows.md` for backlog.
 
 **Key design principles:**
 - Chief plans fast (no files), Senior executes with full context
@@ -27,7 +27,7 @@ POST /solve (100s deadline)
 - 100s deadline with 20s buffer before 120s cloudflare timeout
 - BETA endpoints blocked, lookup_api flags them
 
-## Current State — v28 (Competition Day 3, deployed)
+## Current State — v30 (Competition Day 3)
 
 **Fully supported (proven scores):**
 - Customer creation (8/8, 7/7, 7/7) — bulletproof, all languages
@@ -42,7 +42,7 @@ POST /solve (100s deadline)
 
 **Supported but struggling:**
 - Credit notes: 1/5 — VAT fix deployed (9v), never retested
-- Supplier invoices: 1/6 — **B22 fix deployed**: manual 3-posting split with `amount` + no-VAT type, needs retest
+- Supplier invoices: 5/6 — **B23 fix**: vatType stripped on retry in `_post_voucher`. Previous no-VAT type was OUTPUT on INPUT accounts
 - Bank reconciliation: 1/2 (×3) — customer payments 5/5 perfect, supplier payments **fixed in v27 (P1: auto-creates supplier invoices + B18 voucherType fix + sendToLedger=false retry)** — needs retest
 - Travel expenses: 3/6 — untested since B7 proxy fix
 - Receipt expenses: untested — built but never scored
@@ -52,7 +52,7 @@ POST /solve (100s deadline)
 - Project invoices (W4) — no workflow, agent spirals on raw API
 - Ledger error correction (W11) — **analyze_ledger workflow built (P3)**, needs competition test
 - Monthly/yearly closing — **Chief bypass added (P2)**, Senior handles directly for closing tasks
-- Custom dimensions — partial (voucher-only), agent misses dimension linking on other entities
+- Custom dimensions — **create_dimension workflow built (v30)**, handles name + values in one call. Voucher dimension linking works via freeAccountingDimension1/2/3
 
 ## Weakness Map by Competition Category
 
@@ -155,6 +155,7 @@ POST /solve (100s deadline)
 | 16 | reconcile_bank_statement | T3 | CSV parser, invoice matching, bulk payments + **auto-creates supplier invoices** |
 | 17 | register_expense | T3 | Receipt → voucher with department + input VAT |
 | 18 | analyze_ledger | T3 | Fetch postings, detect errors (imbalance/duplicate/orphaned VAT) |
+| 19 | create_dimension | T2 | Custom accounting dimension + values in one call |
 
 ## Bug Fix History
 
@@ -180,6 +181,7 @@ POST /solve (100s deadline)
 | B20 | Wrong project manager (fallback grab) | PM set to random employee | ✅ FIXED v28 — create_project resolves by projectManagerEmail → projectManagerName → firstName+lastName → fallback |
 | B21 | Per diem added as cost line | 2/6 checks fail on travel expense — perDiemCompensations empty | ✅ FIXED — uses `/travelExpense/perDiemCompensation` endpoint with rateType+rateCategory lookup |
 | B22 | Supplier invoice "systemgenererte" 422 | 1/6 on supplier invoices — account default VAT config conflicts with amountGross+vatType | ✅ FIXED — manual 3-posting split with `amount` (net) + explicit no-VAT type. Also hardened `_post_voucher` retries with no-VAT type |
+| B23 | Voucher systemgenererte on ALL accounts | Dimension voucher 3/6, supplier invoice 5/6 — no-VAT type id=5 is OUTPUT ("Ingen utgående avgift") but expense accounts need INPUT. All retries fail | ✅ FIXED — `_post_voucher` retry 1 now strips vatType entirely (lets Tripletex use account default). Also added `create_dimension` workflow to avoid API fumbling |
 
 ## Day 3 Evening — Priority Action Queue (March 21)
 

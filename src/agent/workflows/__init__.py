@@ -10,6 +10,7 @@ from .credit_note import create_credit_note
 from .travel_expense import create_travel_expense, delete_travel_expense
 from .project import create_project
 from .voucher import create_supplier_invoice, create_voucher
+from .dimension import create_dimension
 from .timesheet import register_time
 from .employment import register_employment
 from .bank_reconciliation import reconcile_bank_statement
@@ -35,6 +36,7 @@ WORKFLOWS: dict[str, callable] = {
     # Tier 3
     "create_supplier_invoice": create_supplier_invoice,
     "create_voucher": create_voucher,
+    "create_dimension": create_dimension,
     "register_time": register_time,
     "register_employment": register_employment,
     "reconcile_bank_statement": reconcile_bank_statement,

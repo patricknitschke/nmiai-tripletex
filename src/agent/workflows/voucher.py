@@ -322,10 +322,19 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
 
 
 async def _post_voucher(voucher: dict, client: TripletexClient) -> dict:
-    """Post a single voucher with 3-tier retry on systemgenererte error.
+    """Post a single voucher with multi-tier retry on systemgenererte error.
 
-    Retry 1: sendToLedger=false (draft mode)
-    Retry 2: use 'amount' instead of 'amountGross' (avoids gross→net VAT auto-split)
+    The "systemgenererte" error means Tripletex auto-generates VAT postings
+    that conflict with ours.  The root cause varies by account type:
+    - Expense accounts (6xxx) have default INPUT VAT → output no-VAT type fails
+    - Revenue accounts (3xxx) have default OUTPUT VAT → input no-VAT type fails
+
+    Retry strategy (B23 fix):
+    1. Original payload + sendToLedger=true
+    2. amount (net) + NO vatType at all + sendToLedger=true
+    3. amount (net) + NO vatType + sendToLedger=false
+    4. amount (net) + explicit no-VAT type + sendToLedger=true (legacy B22)
+    5. amount (net) + explicit no-VAT type + sendToLedger=false
     """
     result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
 
@@ -340,39 +349,54 @@ async def _post_voucher(voucher: dict, client: TripletexClient) -> dict:
         logger.error("Failed to create voucher: %s", result)
         return result
 
-    # Retry 1: same payload but sendToLedger=false (draft)
-    logger.warning("Voucher rejected (system-generated conflict) — retry 1: sendToLedger=false")
-    result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "false"})
+    # Build net-amount version: amountGross → amount, STRIP vatType entirely
+    # B23 fix: stripping vatType lets the account's default VAT config work
+    # without generating conflicting system postings
+    voucher_no_vat = copy.deepcopy(voucher)
+    for p in voucher_no_vat.get("postings", []):
+        if "amountGross" in p:
+            p["amount"] = p.pop("amountGross")
+        p.pop("vatType", None)
+
+    # Retry 1: net amounts + NO vatType + sendToLedger=true
+    logger.warning("Voucher rejected (systemgenererte) — retry 1: amount + strip vatType")
+    result = await client.post("/ledger/voucher", voucher_no_vat, params={"sendToLedger": "true"})
     voucher_id = result.get("value", {}).get("id")
     if voucher_id:
-        logger.info("Voucher created as draft with ID: %d", voucher_id)
+        logger.info("Voucher created (no vatType) with ID: %d", voucher_id)
         return result
 
-    # Retry 2: switch amountGross → amount (net field) + explicit no-VAT type
-    # B22 fix: accounts with default VAT config need explicit 0% VAT to prevent
-    # system-generated postings, even when using net amounts
-    logger.warning("Draft also rejected — retry 2: 'amount' + explicit no-VAT type")
-    voucher_net = copy.deepcopy(voucher)
+    # Retry 2: net amounts + NO vatType + sendToLedger=false (draft)
+    logger.warning("Still rejected — retry 2: amount + strip vatType + draft")
+    result = await client.post("/ledger/voucher", voucher_no_vat, params={"sendToLedger": "false"})
+    voucher_id = result.get("value", {}).get("id")
+    if voucher_id:
+        logger.info("Voucher created as draft (no vatType) with ID: %d", voucher_id)
+        return result
+
+    # Retry 3: net amounts + explicit no-VAT type + sendToLedger=true (legacy B22)
+    logger.warning("No-vatType failed — retry 3: amount + explicit no-VAT type")
+    voucher_explicit = copy.deepcopy(voucher)
     no_vat_id = await _resolve_no_vat_type(client)
-    for p in voucher_net.get("postings", []):
+    for p in voucher_explicit.get("postings", []):
         if "amountGross" in p:
             p["amount"] = p.pop("amountGross")
         if no_vat_id:
             p["vatType"] = {"id": no_vat_id}
         else:
             p.pop("vatType", None)
-    result = await client.post("/ledger/voucher", voucher_net, params={"sendToLedger": "true"})
+    result = await client.post("/ledger/voucher", voucher_explicit, params={"sendToLedger": "true"})
     voucher_id = result.get("value", {}).get("id")
     if voucher_id:
-        logger.info("Voucher created (net amounts + no-VAT) with ID: %d", voucher_id)
+        logger.info("Voucher created (explicit no-VAT) with ID: %d", voucher_id)
         return result
 
-    # Retry 3: net amounts + no-VAT + draft mode
-    logger.warning("Net+noVAT rejected — retry 3: + sendToLedger=false")
-    result = await client.post("/ledger/voucher", voucher_net, params={"sendToLedger": "false"})
+    # Retry 4: explicit no-VAT + draft
+    logger.warning("Explicit no-VAT rejected — retry 4: + sendToLedger=false")
+    result = await client.post("/ledger/voucher", voucher_explicit, params={"sendToLedger": "false"})
     voucher_id = result.get("value", {}).get("id")
     if voucher_id:
-        logger.info("Voucher created as draft (net + no-VAT) with ID: %d", voucher_id)
+        logger.info("Voucher created as draft (explicit no-VAT) with ID: %d", voucher_id)
         return result
 
     logger.error("All voucher retries failed: %s", result)

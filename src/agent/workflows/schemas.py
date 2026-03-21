@@ -245,6 +245,20 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Invoice date (defaults to today)"},
         ],
     },
+    "create_dimension": {
+        "api_endpoint": "POST /ledger/accountingDimensionName + POST /ledger/accountingDimensionValue",
+        "notes": (
+            "Creates a custom accounting dimension with values in one call. "
+            "The dimension index (1-3) is auto-assigned by Tripletex. "
+            "Returns value IDs that can be passed as dimensionId to create_voucher postings. "
+            "Use this BEFORE create_voucher when the task asks to create a dimension AND post a voucher."
+        ),
+        "fields": [
+            {"name": "dimensionName", "type": "string", "required": True, "description": "Name of the dimension (e.g. 'Region', 'Prosjekttype')"},
+            {"name": "description", "type": "string", "required": False, "description": "Description of the dimension"},
+            {"name": "values", "type": "array of strings", "required": True, "description": "List of dimension value names (e.g. ['Sør-Norge', 'Midt-Norge'])"},
+        ],
+    },
     "create_voucher": {
         "api_endpoint": "POST /ledger/voucher",
         "notes": (

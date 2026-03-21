@@ -119,7 +119,8 @@
       "Bash(.venv/bin/python -c \"from src.agent.llm.client import complete, tool_use_loop; print\\(''LLM client OK''\\)\")",
       "Bash(.venv/bin/python -c \":*)",
       "Bash(grep -r \"perDiemCompensation\\\\|accommodationAllowance\\\\|mileageAllowance\" /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/src --include=*.py)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''src/agent/workflows/voucher.py''\\).read\\(\\)\\); print\\(''OK''\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''src/agent/workflows/voucher.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(grep -r dimension /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/docs --include=*.md --include=*.json --include=*.txt)"
     ]
   },
   "enabledMcpjsonServers": [
