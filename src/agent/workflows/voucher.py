@@ -168,10 +168,12 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     vat_type_id = await _resolve_vat_type(client, vat_rate, "input")
 
     # B25v2: Single posting — Tripletex auto-generates 2710 (VAT) + 2400 (supplier debt)
+    # row>=1 because row 0 is reserved for system-generated postings
     expense_posting = {
         "date": voucher_date,
         "description": description,
         "amountGross": amount_incl,
+        "row": 1,
     }
     if expense_account_id:
         expense_posting["account"] = {"id": expense_account_id}
@@ -272,13 +274,17 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
     The expense line gets the account's default vatType so Tripletex can split.
     """
     # First pass: resolve accounts and discover VAT configs
+    # row>=1 because row 0 is reserved for system-generated postings
+    row_counter = 1
     resolved = []  # list of (posting_dict, account_number_str, has_default_vat)
     for p in postings_data:
         posting = {
             "date": voucher_date,
             "description": p.get("description", description),
             "amountGross": p.get("amount", p.get("amountGross", 0)),
+            "row": row_counter,
         }
+        row_counter += 1
 
         account_number = p.get("account") or p.get("accountNumber")
         account_has_default_vat = False

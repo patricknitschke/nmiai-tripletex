@@ -96,10 +96,12 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
 
     postings = []
 
+    # row>=1 because row 0 is reserved for system-generated postings
     expense_posting = {
         "date": expense_date,
         "description": full_desc,
         "amountGross": amount_incl,
+        "row": 1,
     }
     if expense_account_id:
         expense_posting["account"] = {"id": expense_account_id}
@@ -113,6 +115,7 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
         "date": expense_date,
         "description": full_desc,
         "amountGross": -amount_incl,
+        "row": 2,
     }
     if payment_account_id:
         payment_posting["account"] = {"id": payment_account_id}
