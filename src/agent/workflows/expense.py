@@ -2,7 +2,7 @@ import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
-from .voucher import _resolve_vat_type, _post_voucher
+from .voucher import _resolve_no_vat_type, _post_voucher
 
 logger = logging.getLogger("agent.workflows.expense")
 
@@ -10,12 +10,13 @@ logger = logging.getLogger("agent.workflows.expense")
 async def register_expense(data: dict, client: TripletexClient) -> dict:
     """Register an expense from a receipt as a voucher with correct VAT and department.
 
-    Creates a voucher with:
-    - Debit: expense account (with input VAT type if applicable)
-    - Credit: bank/payment account (1920 default)
+    Uses the same 3-posting structure as create_supplier_invoice (B24 fix):
+    - Debit: expense account — net amount (excl VAT), explicit no-VAT type
+    - Debit: VAT account 2710 — VAT amount, explicit no-VAT type (only if VAT > 0)
+    - Credit: bank/payment account (1920) — gross amount, explicit no-VAT type
 
-    If a department is specified, the workflow resolves it and links via the department
-    field on the posting.
+    This avoids the "systemgenererte" 422 error caused by amountGross + vatType
+    triggering Tripletex's auto-generated VAT postings on accounts with default VAT config.
 
     Input data fields:
     - description: what the expense is for (e.g. "Oppbevaringsboks")
@@ -47,9 +48,11 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     elif not amount_incl and not amount_excl:
         return {"error": "No amount provided for expense"}
 
+    vat_amount = round(amount_incl - amount_excl, 2)
+
     full_desc = f"{supplier_name} - {description}" if supplier_name else description
-    logger.info("Registering expense: %s, total=%.2f, excl=%.2f, VAT=%.0f%%",
-                full_desc, amount_incl, amount_excl, vat_rate)
+    logger.info("Registering expense: %s, total=%.2f, excl=%.2f, VAT=%.2f (%.0f%%)",
+                full_desc, amount_incl, amount_excl, vat_amount, vat_rate)
 
     # Resolve expense account
     expense_account_id = None
@@ -67,10 +70,17 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     if accounts:
         payment_account_id = accounts[0]["id"]
 
-    # Resolve input VAT type
-    vat_type_id = None
-    if vat_rate > 0:
-        vat_type_id = await _resolve_vat_type(client, vat_rate, "input")
+    # Resolve no-VAT type (B24: explicit no-VAT on all postings prevents systemgenererte)
+    no_vat_type_id = await _resolve_no_vat_type(client)
+
+    # Resolve VAT account 2710 (only needed if VAT > 0)
+    vat_account_id = None
+    if vat_amount > 0:
+        result = await client.get("/ledger/account", params={"number": "2710", "count": "1"})
+        accounts = result.get("values", [])
+        if accounts:
+            vat_account_id = accounts[0]["id"]
+            logger.info("Resolved VAT account 2710 -> id=%d", vat_account_id)
 
     # Resolve department
     department_id = data.get("departmentId")
@@ -89,36 +99,55 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
             if department_id:
                 logger.info("Created department '%s' (id=%d)", department_name, department_id)
 
-    # Build postings
-    # Expense posting (debit) — with VAT type, Tripletex auto-splits net + VAT
+    # Build postings — 3-posting structure like create_supplier_invoice
+    postings = []
+
+    # 1. Debit expense account — net amount (excl VAT), explicit no-VAT type
     expense_posting = {
         "date": expense_date,
         "description": full_desc,
-        "amountGross": amount_incl,
+        "amount": amount_excl,
     }
     if expense_account_id:
         expense_posting["account"] = {"id": expense_account_id}
-    if vat_type_id:
-        expense_posting["vatType"] = {"id": vat_type_id}
+    if no_vat_type_id:
+        expense_posting["vatType"] = {"id": no_vat_type_id}
     if department_id:
         expense_posting["department"] = {"id": department_id}
+    postings.append(expense_posting)
 
-    # Payment posting (credit) — negative = credit
+    # 2. Debit VAT account 2710 — VAT amount, explicit no-VAT type (only if VAT > 0)
+    if vat_amount > 0:
+        vat_posting = {
+            "date": expense_date,
+            "description": f"MVA {full_desc}",
+            "amount": vat_amount,
+        }
+        if vat_account_id:
+            vat_posting["account"] = {"id": vat_account_id}
+        if no_vat_type_id:
+            vat_posting["vatType"] = {"id": no_vat_type_id}
+        postings.append(vat_posting)
+
+    # 3. Credit payment/bank account — negative gross amount, explicit no-VAT type
     payment_posting = {
         "date": expense_date,
         "description": full_desc,
-        "amountGross": -amount_incl,
+        "amount": -amount_incl,
     }
     if payment_account_id:
         payment_posting["account"] = {"id": payment_account_id}
+    if no_vat_type_id:
+        payment_posting["vatType"] = {"id": no_vat_type_id}
+    postings.append(payment_posting)
 
     voucher = {
         "date": expense_date,
         "description": full_desc,
-        "postings": [expense_posting, payment_posting],
+        "postings": postings,
     }
 
-    logger.info("Creating expense voucher with 2 postings")
+    logger.info("Creating expense voucher with %d postings", len(postings))
     result = await _post_voucher(voucher, client)
 
     voucher_id = result.get("value", {}).get("id")
