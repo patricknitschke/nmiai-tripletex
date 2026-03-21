@@ -97,6 +97,8 @@ Return ONLY valid JSON:
   NOT one step per row. The sub-agent will loop through the data within each step.
 - For employment contracts (arbeidskontrakt/tilbudsbrev), use the register_employment workflow — \
   it handles employee creation, department, employment details, salary, and working hours in ONE call.
+- If the prompt mentions a START DATE for an employee (tiltredelse/startdato/fecha de inicio/date de début/ \
+  data de início/Startdatum/Anfangsdatum/start date), ALWAYS use register_employment instead of create_employee.
 """
 
 

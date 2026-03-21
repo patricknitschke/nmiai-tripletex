@@ -95,6 +95,11 @@ Always use lookup_api first to get the correct endpoint schema.
   Extract ALL fields from the PDF: firstName, lastName, dateOfBirth, nationalIdentityNumber, bankAccountNumber, \
   departmentName, startDate, occupationCode (STYRK/yrkeskode — a 4-digit code like "2411"), \
   percentageOfFullTimeEquivalent, annualSalary, hoursPerDay. Don't skip any field that's in the document.
+- **Month-end/year-end closing (avskrivning/periodisering/accrual/depreciation/salary provision):** \
+  The prompt gives you the exact accounts and amounts. Do NOT investigate or analyze the ledger first. \
+  Just calculate the amounts and call create_voucher IMMEDIATELY. Post EACH journal entry as a SEPARATE \
+  create_voucher call (not all in one). Example: accrual reversal = one voucher, depreciation = one voucher, \
+  salary provision = one voucher. Depreciation formula: acquisition_cost / useful_life_years / 12.
 - If a call returns a 4xx error, use lookup_api to check correct fields, then retry ONCE.
 - Do NOT guess field names. Use lookup_api or the workflow specs above.
 - Be EFFICIENT and DECISIVE. Aim to complete the task in 3-5 tool calls.

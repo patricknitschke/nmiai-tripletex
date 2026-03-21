@@ -155,21 +155,10 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     if vat_rate > 0:
         vat_type_id = await _resolve_vat_type(client, vat_rate, "input")
 
-    # Get voucher type for supplier invoice
-    vt_result = await client.get("/ledger/voucherType", params={"name": "Leverandorfaktura", "count": "1"})
-    voucher_types = vt_result.get("values", [])
-    if not voucher_types:
-        # Fallback: try without special chars, or other names
-        for name in ["Leverandørfaktura", "Inngående faktura"]:
-            vt_result = await client.get("/ledger/voucherType", params={"name": name, "count": "1"})
-            voucher_types = vt_result.get("values", [])
-            if voucher_types:
-                break
-
+    # B18 fix: Do NOT set voucherType "Leverandørfaktura" — it triggers system-generated
+    # posting rules that conflict with our explicit debit/credit postings (422 errors).
+    # The default voucher type works fine for supplier invoices.
     voucher_type = None
-    if voucher_types:
-        voucher_type = {"id": voucher_types[0]["id"]}
-        logger.info("Voucher type: %s (id=%d)", voucher_types[0].get("name"), voucher_types[0]["id"])
 
     # Build postings
     # When vatType is set on the expense posting, Tripletex auto-splits into
