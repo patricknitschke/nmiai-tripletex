@@ -3,12 +3,13 @@ from datetime import date
 
 from ..tripletex import TripletexClient
 from .invoice import create_invoice
+from .payment import _rank_invoice_match
 
 logger = logging.getLogger("agent.workflows.credit_note")
 
 
 async def _find_invoice_id(data: dict, client: TripletexClient) -> int | None:
-    """Find an invoice by ID, number, or by searching the customer's invoices."""
+    """Find an invoice by ID, number, or ranked multi-pass search."""
     invoice_id = data.get("invoiceId")
     if invoice_id:
         return invoice_id
@@ -25,34 +26,21 @@ async def _find_invoice_id(data: dict, client: TripletexClient) -> int | None:
         if invoices:
             return invoices[0]["id"]
 
-    # Search by customer name or org number — find their most recent non-credited invoice
-    customer_name = data.get("customerName")
-    org_number = data.get("customerOrgNumber") or data.get("organizationNumber")
+    # Fetch all non-credit-note invoices for ranked matching
+    all_inv = await client.get("/invoice", params={
+        "invoiceDateFrom": "2000-01-01",
+        "invoiceDateTo": "2099-12-31",
+        "count": "1000",
+    })
+    candidates = [
+        inv for inv in all_inv.get("values", [])
+        if not inv.get("isCreditNote") and not inv.get("isCredited")
+    ]
+    if not candidates:
+        return None
 
-    if customer_name or org_number:
-        params = {"count": "1"}
-        if org_number:
-            params["organizationNumber"] = org_number
-        elif customer_name:
-            params["name"] = customer_name
-        customers = await client.get("/customer", params=params)
-        customer_list = customers.get("values", [])
-        if customer_list:
-            customer_id = customer_list[0]["id"]
-            logger.info("Found customer %s (id=%d), searching their invoices", customer_name or org_number, customer_id)
-
-            invoices = await client.get("/invoice", params={
-                "customerId": str(customer_id),
-                "invoiceDateFrom": "2000-01-01",
-                "invoiceDateTo": "2099-12-31",
-                "count": "100",
-            })
-            for inv in invoices.get("values", []):
-                if not inv.get("isCreditNote") and not inv.get("isCredited"):
-                    logger.info("Found non-credited invoice %d for customer %d", inv["id"], customer_id)
-                    return inv["id"]
-
-    return None
+    best = _rank_invoice_match(data, candidates)
+    return best["id"] if best else None
 
 
 async def create_credit_note(data: dict, client: TripletexClient) -> dict:

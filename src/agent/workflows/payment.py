@@ -7,6 +7,58 @@ from .invoice import create_invoice
 logger = logging.getLogger("agent.workflows.payment")
 
 
+def _normalize(s: str) -> str:
+    return s.strip().lower() if s else ""
+
+
+def _rank_invoice_match(data: dict, candidates: list[dict]) -> dict | None:
+    """Rank invoice candidates by: customer org → customer name → amount/outstanding → description → recency."""
+    org_number = data.get("customerOrgNumber") or data.get("organizationNumber") or ""
+    customer_name = _normalize(data.get("customerName", ""))
+    description = _normalize(data.get("description", ""))
+    target_amount = data.get("amountExclVat") or data.get("amount") or data.get("paidAmount")
+
+    def _score(inv: dict) -> tuple:
+        cust = inv.get("customer") or {}
+        if isinstance(cust, dict):
+            inv_org = cust.get("organizationNumber", "") or ""
+            inv_cust_name = _normalize(cust.get("name", ""))
+        else:
+            inv_org = ""
+            inv_cust_name = ""
+
+        # Score components (higher = better match)
+        s_org = 1 if org_number and inv_org == org_number else 0
+        s_name = 1 if customer_name and customer_name in inv_cust_name else 0
+        s_amount = 0
+        if target_amount:
+            outstanding = inv.get("amountOutstanding", 0)
+            total = inv.get("amount", 0)
+            if outstanding > 0 and abs(outstanding - float(target_amount)) < 0.01:
+                s_amount = 2
+            elif total > 0 and abs(total - float(target_amount)) < 0.01:
+                s_amount = 1
+        s_desc = 0
+        if description:
+            for line in inv.get("orderLines", []):
+                if description in _normalize(line.get("description", "")):
+                    s_desc = 1
+                    break
+        # Recency: higher invoice ID = more recent
+        s_recency = inv.get("id", 0)
+
+        return (s_org, s_name, s_amount, s_desc, s_recency)
+
+    ranked = sorted(candidates, key=_score, reverse=True)
+    best = ranked[0]
+    score = _score(best)
+    # Require at least one signal beyond recency
+    if score[0] == 0 and score[1] == 0 and score[2] == 0 and score[3] == 0:
+        return None
+    logger.info("Ranked invoice match: id=%d score=%s", best["id"], score)
+    return best
+
+
 async def _find_payment_type_id(client: TripletexClient) -> int | None:
     """Get the first available payment type ID."""
     result = await client.get("/invoice/paymentType", params={"count": "1"})
@@ -17,7 +69,7 @@ async def _find_payment_type_id(client: TripletexClient) -> int | None:
 
 
 async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
-    """Find an invoice by ID, number, or by searching the customer's invoices. Returns full invoice dict."""
+    """Find an invoice by ID, number, or ranked multi-pass search. Returns full invoice dict."""
     invoice_id = data.get("invoiceId")
     if invoice_id:
         result = await client.get(f"/invoice/{invoice_id}")
@@ -35,35 +87,20 @@ async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
         if invoices:
             return invoices[0]
 
-    # Search by customer name or org number
-    customer_name = data.get("customerName")
-    org_number = data.get("customerOrgNumber") or data.get("organizationNumber")
+    # Fetch all non-credit-note invoices for ranked matching
+    all_inv = await client.get("/invoice", params={
+        "invoiceDateFrom": "2000-01-01",
+        "invoiceDateTo": "2099-12-31",
+        "count": "1000",
+    })
+    candidates = [
+        inv for inv in all_inv.get("values", [])
+        if not inv.get("isCreditNote") and not inv.get("isCredited")
+    ]
+    if not candidates:
+        return None
 
-    if customer_name or org_number:
-        params = {"count": "1"}
-        if org_number:
-            params["organizationNumber"] = org_number
-        elif customer_name:
-            params["name"] = customer_name
-        customers = await client.get("/customer", params=params)
-        customer_list = customers.get("values", [])
-        if customer_list:
-            customer_id = customer_list[0]["id"]
-            logger.info("Found customer %s (id=%d), searching their invoices", customer_name or org_number, customer_id)
-
-            invoices = await client.get("/invoice", params={
-                "customerId": str(customer_id),
-                "invoiceDateFrom": "2000-01-01",
-                "invoiceDateTo": "2099-12-31",
-                "count": "100",
-            })
-            for inv in invoices.get("values", []):
-                if not inv.get("isCreditNote") and not inv.get("isCredited"):
-                    logger.info("Found non-credited invoice %d (amount=%s) for customer %d",
-                                inv["id"], inv.get("amount"), customer_id)
-                    return inv
-
-    return None
+    return _rank_invoice_match(data, candidates)
 
 
 async def register_payment(data: dict, client: TripletexClient) -> dict:
@@ -125,6 +162,17 @@ async def register_payment(data: dict, client: TripletexClient) -> dict:
 
     if result.get("value", {}).get("id"):
         logger.info("Payment registered successfully on invoice %d", invoice_id)
+
+        # Free GET: verify amountOutstanding is correct after payment
+        verify = await client.get(f"/invoice/{invoice_id}")
+        actual = verify.get("value", {})
+        outstanding = actual.get("amountOutstanding", -1)
+        if data.get("fullPayment") and outstanding > 0.01:
+            result["warnings"] = [f"Payment registered but amountOutstanding is {outstanding} (expected 0). Invoice may not be fully paid."]
+            logger.warning("Invoice %d amountOutstanding=%.2f after full payment — expected 0", invoice_id, outstanding)
+        elif outstanding >= 0:
+            result.setdefault("value", {})["amountOutstandingAfterPayment"] = outstanding
+            logger.info("Invoice %d verified: amountOutstanding=%.2f", invoice_id, outstanding)
     else:
         logger.error("Failed to register payment: %s", result)
 

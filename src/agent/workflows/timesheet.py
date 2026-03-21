@@ -2,12 +2,13 @@ import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
+from .employee import create_employee
 
 logger = logging.getLogger("agent.workflows.timesheet")
 
 
 async def _resolve_employee(data: dict, client: TripletexClient) -> int | None:
-    """Find employee by email, name, or ID."""
+    """Find employee by email or name. Creates if not found and enough info is provided."""
     employee_id = data.get("employeeId")
     if employee_id:
         return employee_id
@@ -30,13 +31,20 @@ async def _resolve_employee(data: dict, client: TripletexClient) -> int | None:
                 logger.info("Found employee %s %s (id=%d)", first, last, emp["id"])
                 return emp["id"]
 
-    # Fallback: get first employee
-    result = await client.get("/employee", params={"count": "1"})
-    values = result.get("values", [])
-    if values:
-        logger.info("Using first employee as fallback (id=%d)", values[0]["id"])
-        return values[0]["id"]
+    # Employee not found — create if we have name info
+    if first and last:
+        logger.info("Employee %s %s not found, creating", first, last)
+        emp_data = {"firstName": first, "lastName": last}
+        if email:
+            emp_data["email"] = email
+        result = await create_employee(emp_data, client)
+        emp_id = result.get("value", {}).get("id")
+        if emp_id:
+            logger.info("Created employee %s %s (id=%d)", first, last, emp_id)
+            return emp_id
 
+    # No identifying info at all — fail explicitly, don't guess
+    logger.error("Cannot resolve employee: no ID, email, or name provided")
     return None
 
 
@@ -76,32 +84,36 @@ async def _resolve_activity(data: dict, client: TripletexClient, project_id: int
     activities = result.get("values", [])
 
     if activity_name:
-        # Match by name (case-insensitive)
+        # Match by name (case-insensitive) in project-specific activities
         for act in activities:
             if act.get("name", "").lower() == activity_name.lower():
                 logger.info("Found activity '%s' (id=%d)", activity_name, act["id"])
                 return act["id"]
 
-    # If no match found but activities exist, use the first one
-    if activities:
-        logger.info("Using first available activity '%s' (id=%d)", activities[0].get("name"), activities[0]["id"])
-        return activities[0]["id"]
+        # Try partial match (e.g., "Utvikling" matches "Utvikling/Development")
+        activity_lower = activity_name.lower()
+        for act in activities:
+            if activity_lower in act.get("name", "").lower():
+                logger.info("Found activity by partial match '%s' → '%s' (id=%d)", activity_name, act.get("name"), act["id"])
+                return act["id"]
 
-    # No activities found — search general activities
-    if activity_name:
+        # Search general activities by name
         result = await client.get("/activity", params={"name": activity_name, "count": "1"})
         values = result.get("values", [])
         if values:
             logger.info("Found general activity '%s' (id=%d)", activity_name, values[0]["id"])
             return values[0]["id"]
 
-    # Last resort: get any activity
-    result = await client.get("/activity", params={"count": "1"})
-    values = result.get("values", [])
-    if values:
-        logger.info("Using first general activity as fallback (id=%d)", values[0]["id"])
-        return values[0]["id"]
+    # No activity name given — use first project-specific activity (reasonable default)
+    if not activity_name and activities:
+        logger.info("No activity name specified, using first project activity '%s' (id=%d)", activities[0].get("name"), activities[0]["id"])
+        return activities[0]["id"]
 
+    # Activity name given but no match found anywhere — fail explicitly
+    if activity_name:
+        logger.error("Activity '%s' not found in project %d or general activities", activity_name, project_id)
+    else:
+        logger.error("No activities available for project %d", project_id)
     return None
 
 

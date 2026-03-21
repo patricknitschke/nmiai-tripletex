@@ -36,11 +36,20 @@ def build_content(prompt: str, files: list[FileAttachment]) -> list[dict]:
             logger.info("Attached PDF: %s", f.filename)
         else:
             try:
-                text_content = base64.b64decode(f.content_base64).decode("utf-8")
+                raw_bytes = base64.b64decode(f.content_base64)
+                text_content = None
+                for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+                    try:
+                        text_content = raw_bytes.decode(enc)
+                        break
+                    except (UnicodeDecodeError, ValueError):
+                        continue
+                if text_content is None:
+                    text_content = raw_bytes.decode("latin-1")
                 content.append(
                     {"type": "text", "text": f"--- File: {f.filename} ---\n{text_content}"}
                 )
-                logger.info("Attached text file: %s", f.filename)
+                logger.info("Attached text file: %s (%s)", f.filename, enc)
             except Exception:
                 logger.warning("Could not decode file: %s", f.filename)
 

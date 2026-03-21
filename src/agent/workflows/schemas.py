@@ -354,6 +354,25 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "supplierName", "type": "string", "required": False, "description": "Who issued the receipt (e.g. 'Biltema')"},
         ],
     },
+    "register_payroll": {
+        "api_endpoint": "POST /salary/transaction",
+        "notes": (
+            "Executes payroll (nómina/lønn/Gehaltsabrechnung/paie) for an employee. "
+            "Self-contained: finds employee by email, ensures employment record exists, "
+            "looks up salary types, and creates the salary transaction with specifications. "
+            "Use baseSalary for monthly base pay and bonus for one-time additions."
+        ),
+        "fields": [
+            {"name": "firstName", "type": "string", "required": False, "description": "Employee first name"},
+            {"name": "lastName", "type": "string", "required": False, "description": "Employee last name"},
+            {"name": "email", "type": "string", "required": False, "description": "Employee email (preferred for lookup)"},
+            {"name": "baseSalary", "type": "number", "required": False, "description": "Monthly base salary amount in NOK"},
+            {"name": "bonus", "type": "number", "required": False, "description": "One-time bonus amount in NOK (added on top of base salary)"},
+            {"name": "year", "type": "integer", "required": False, "description": "Payroll year (defaults to current year)"},
+            {"name": "month", "type": "integer", "required": False, "description": "Payroll month (defaults to current month)"},
+            {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Transaction date (defaults to today)"},
+        ],
+    },
     "analyze_ledger": {
         "api_endpoint": "GET /ledger/posting",
         "notes": (
@@ -367,6 +386,70 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "dateTo", "type": "string (YYYY-MM-DD)", "required": False, "description": "End date for analysis (default: Feb 28 current year)"},
             {"name": "accountFrom", "type": "integer", "required": False, "description": "Optional: only analyze accounts from this number"},
             {"name": "accountTo", "type": "integer", "required": False, "description": "Optional: only analyze accounts up to this number"},
+        ],
+    },
+    "register_fx_payment": {
+        "api_endpoint": "PUT /invoice/{id}/:payment + POST /ledger/voucher",
+        "notes": (
+            "Registers payment on a foreign-currency invoice AND posts the exchange difference voucher "
+            "(disagio = loss, agio = gain). Self-contained: finds the invoice, registers payment at the "
+            "actual NOK received, calculates exchange difference, posts to account 8060. "
+            "Use this for ANY task mentioning exchange rate differences, 'disagio', 'agio', valutadifferanse, "
+            "différence de change, diferença cambial, Wechselkursdifferenz."
+        ),
+        "fields": [
+            {"name": "customerName", "type": "string", "required": False, "description": "Customer name to find the invoice"},
+            {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Customer org number"},
+            {"name": "invoiceId", "type": "integer", "required": False, "description": "Invoice ID if known"},
+            {"name": "invoiceNumber", "type": "integer", "required": False, "description": "Invoice number if known"},
+            {"name": "invoiceAmountForeign", "type": "number", "required": True, "description": "Invoice amount in foreign currency (e.g. 19074 EUR)"},
+            {"name": "invoiceRate", "type": "number", "required": True, "description": "Exchange rate at invoice time (e.g. 11.69 NOK/EUR)"},
+            {"name": "paymentRate", "type": "number", "required": True, "description": "Exchange rate at payment time (e.g. 11.28 NOK/EUR)"},
+            {"name": "currency", "type": "string", "required": False, "description": "Currency code (EUR, USD, GBP etc). Default EUR."},
+            {"name": "paymentDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Date of payment"},
+            {"name": "description", "type": "string", "required": False, "description": "Description for the exchange difference voucher"},
+        ],
+    },
+    "create_project_invoice": {
+        "api_endpoint": "POST /order + PUT /order/{id}/:invoice",
+        "notes": (
+            "Invoices a project's work to the linked customer. Two modes: "
+            "(1) Fixed-price: invoice a percentage or specific amount of the project's fixed price. "
+            "(2) Time-based: invoice from registered timesheet hours at their rates. "
+            "Self-contained: finds the project, gathers hours, builds invoice lines, creates order, invoices. "
+            "Use this for project invoicing tasks (prosjektfaktura/factura de proyecto/fatura de projeto/Projektrechnung). "
+            "The project must already exist with a linked customer."
+        ),
+        "fields": [
+            {"name": "projectId", "type": "integer", "required": False, "description": "Project ID if known"},
+            {"name": "projectNumber", "type": "string", "required": False, "description": "Project number"},
+            {"name": "projectName", "type": "string", "required": False, "description": "Project name to search for"},
+            {"name": "invoicePercent", "type": "number", "required": False, "description": "Percentage of fixed price to invoice (e.g. 50 for 50%)"},
+            {"name": "invoiceAmount", "type": "number", "required": False, "description": "Specific amount to invoice (overrides percent)"},
+            {"name": "includeHours", "type": "boolean", "required": False, "description": "If True, invoice based on registered timesheet hours instead of fixed price"},
+            {"name": "hourlyRate", "type": "number", "required": False, "description": "Override hourly rate for time-based invoicing"},
+            {"name": "description", "type": "string", "required": False, "description": "Invoice description/comment"},
+            {"name": "invoiceDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Invoice date (default today)"},
+            {"name": "sendToCustomer", "type": "boolean", "required": False, "description": "Whether to send the invoice"},
+        ],
+    },
+    "create_dimension_voucher": {
+        "api_endpoint": "POST /ledger/accountingDimensionName + POST /ledger/accountingDimensionValue + POST /ledger/voucher",
+        "notes": (
+            "All-in-one: creates a custom accounting dimension with values, then posts a voucher "
+            "linked to one of the values. Eliminates the risk of losing the dimension value ID "
+            "between steps. Use this when the task asks to BOTH create a dimension AND post a voucher. "
+            "If the task only creates a dimension (no voucher), use create_dimension instead."
+        ),
+        "fields": [
+            {"name": "dimensionName", "type": "string", "required": True, "description": "Name of the dimension (e.g. 'Region', 'Kostsenter')"},
+            {"name": "values", "type": "array of strings", "required": True, "description": "Dimension value names (e.g. ['Sør-Norge', 'Midt-Norge'])"},
+            {"name": "linkValue", "type": "string", "required": False, "description": "Which dimension value to link the voucher to (e.g. 'Sør-Norge'). Defaults to first value."},
+            {"name": "voucherAccount", "type": "number", "required": False, "description": "Account number for the voucher debit (e.g. 6540, 6300, 7300)"},
+            {"name": "voucherAmount", "type": "number", "required": False, "description": "Amount for the voucher posting"},
+            {"name": "voucherDescription", "type": "string", "required": False, "description": "Voucher description"},
+            {"name": "voucherDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Voucher date"},
+            {"name": "balancingAccount", "type": "number", "required": False, "description": "Credit/balancing account (default 2400)"},
         ],
     },
 }

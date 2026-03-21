@@ -54,14 +54,28 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     logger.info("Registering expense: %s, total=%.2f, excl=%.2f, VAT=%.2f (%.0f%%)",
                 full_desc, amount_incl, amount_excl, vat_amount, vat_rate)
 
-    # Resolve expense account
+    # Resolve expense account + check VAT config (preflight)
+    warnings = []
     expense_account_id = None
+    expense_account_has_default_vat = False
     if expense_account:
-        result = await client.get("/ledger/account", params={"number": str(expense_account), "count": "1"})
+        result = await client.get("/ledger/account", params={
+            "number": str(expense_account), "count": "1",
+            "fields": "id,vatType,vatLocked",
+        })
         accounts = result.get("values", [])
         if accounts:
-            expense_account_id = accounts[0]["id"]
-            logger.info("Resolved expense account %s -> id=%d", expense_account, expense_account_id)
+            acc = accounts[0]
+            expense_account_id = acc["id"]
+            if acc.get("vatLocked") or acc.get("vatType"):
+                expense_account_has_default_vat = True
+                logger.info("Expense account %s has default VAT config (locked=%s) — omitting vatType",
+                            expense_account, acc.get("vatLocked", False))
+            else:
+                logger.info("Resolved expense account %s -> id=%d (no default VAT)", expense_account, expense_account_id)
+        else:
+            warnings.append(f"Expense account {expense_account} not found — posting will lack account reference")
+            logger.warning("Expense account %s not found", expense_account)
 
     # Resolve payment/bank account
     payment_account_id = None
@@ -69,9 +83,14 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     accounts = result.get("values", [])
     if accounts:
         payment_account_id = accounts[0]["id"]
+    else:
+        warnings.append(f"Payment account {payment_account} not found — credit posting will lack account reference")
+        logger.warning("Payment account %s not found", payment_account)
 
-    # Resolve no-VAT type (B24: explicit no-VAT on all postings prevents systemgenererte)
-    no_vat_type_id = await _resolve_no_vat_type(client)
+    # Resolve no-VAT type (only needed if expense account lacks default VAT config)
+    no_vat_type_id = None
+    if not expense_account_has_default_vat:
+        no_vat_type_id = await _resolve_no_vat_type(client)
 
     # Resolve VAT account 2710 (only needed if VAT > 0)
     vat_account_id = None
@@ -81,28 +100,24 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
         if accounts:
             vat_account_id = accounts[0]["id"]
             logger.info("Resolved VAT account 2710 -> id=%d", vat_account_id)
+        else:
+            warnings.append("VAT account 2710 not found — VAT posting will lack account reference")
+            logger.warning("VAT account 2710 not found")
 
     # Resolve department
     department_id = data.get("departmentId")
     department_name = data.get("departmentName") or data.get("department")
 
     if not department_id and department_name:
-        dept_result = await client.get("/department", params={"query": department_name, "count": "1"})
-        depts = dept_result.get("values", [])
-        if depts:
-            department_id = depts[0]["id"]
-            logger.info("Found department '%s' (id=%d)", department_name, department_id)
-        else:
-            # Create department
-            dept = await client.post("/department", {"name": department_name, "departmentNumber": "1"})
-            department_id = dept.get("value", {}).get("id")
-            if department_id:
-                logger.info("Created department '%s' (id=%d)", department_name, department_id)
+        from .department import resolve_or_create_department
+        department_id = await resolve_or_create_department(department_name, client)
 
     # Build postings — 3-posting structure like create_supplier_invoice
     postings = []
 
-    # 1. Debit expense account — net amount (excl VAT), explicit no-VAT type
+    # 1. Debit expense account — net amount (excl VAT)
+    #    If account has default VAT config: omit vatType (preflight)
+    #    If no default: set explicit no-VAT type
     expense_posting = {
         "date": expense_date,
         "description": full_desc,
@@ -110,7 +125,7 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     }
     if expense_account_id:
         expense_posting["account"] = {"id": expense_account_id}
-    if no_vat_type_id:
+    if not expense_account_has_default_vat and no_vat_type_id:
         expense_posting["vatType"] = {"id": no_vat_type_id}
     if department_id:
         expense_posting["department"] = {"id": department_id}
@@ -156,4 +171,6 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     else:
         logger.error("Failed to create expense voucher: %s", result)
 
+    if warnings:
+        result["warnings"] = warnings
     return result

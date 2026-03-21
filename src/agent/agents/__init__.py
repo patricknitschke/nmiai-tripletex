@@ -1,4 +1,4 @@
-"""Agent definitions — Chief (planner) and specialists (executors)."""
+"""Agent definitions — Chief (planner)."""
 
 from .chief import chief_plan
 

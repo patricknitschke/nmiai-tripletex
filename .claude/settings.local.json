@@ -120,7 +120,14 @@
       "Bash(.venv/bin/python -c \":*)",
       "Bash(grep -r \"perDiemCompensation\\\\|accommodationAllowance\\\\|mileageAllowance\" /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/src --include=*.py)",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''src/agent/workflows/voucher.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
-      "Bash(grep -r dimension /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/docs --include=*.md --include=*.json --include=*.txt)"
+      "Bash(grep -r dimension /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/docs --include=*.md --include=*.json --include=*.txt)",
+      "Bash(jq \".paths[\"\"/salary/type\"\"] | .get\" /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/docs/tripletex_openapi.json)",
+      "Bash(python3 -c \"from src.agent.workflows.payroll import register_payroll; print\\(''Import OK''\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''src/agent/workflows/payroll.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
+      "Bash(python -m pytest tests/test_workflows.py -v --tb=short)",
+      "Bash(chmod +x /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/scripts/replay.py)",
+      "Bash(python scripts/replay.py --dry-run)",
+      "Bash(python scripts/replay.py --filter payroll --dry-run)"
     ]
   },
   "enabledMcpjsonServers": [

@@ -104,6 +104,11 @@ Always use lookup_api first to get the correct endpoint schema.
   the project start date. Use today's date for all time entries on new projects. If you need to register many \
   hours, put them all on today (or split across today and future dates). NEVER use past dates for new projects.
 - **Project manager:** Pass projectManagerEmail to the create_project workflow to set the correct person.
+- **Partial failures:** Workflows may return `"ok": false` with `"errors"` and `"_needs_repair"`. \
+  This means the main resource was created but sub-steps failed (e.g. cost lines, employment details, \
+  dimension values). READ the `_needs_repair` message — it tells you exactly what to fix with raw API calls. \
+  Do NOT assume the task is complete when you see `ok: false`. Also check for `"warnings"` — these indicate \
+  potential issues (e.g. unresolved accounts) that may need attention.
 - If a call returns a 4xx error, use lookup_api to check correct fields, then retry ONCE.
 - Do NOT guess field names. Use lookup_api or the workflow specs above.
 - Be EFFICIENT and DECISIVE. Aim to complete the task in 3-5 tool calls.
@@ -180,6 +185,11 @@ TOOLS = [
             "properties": {
                 "endpoint": {"type": "string", "description": "API endpoint path"},
                 "payload": {"type": "object", "description": "JSON body"},
+                "params": {
+                    "type": "object",
+                    "description": "Query parameters",
+                    "additionalProperties": {"type": "string"},
+                },
             },
             "required": ["endpoint", "payload"],
         },
@@ -192,6 +202,11 @@ TOOLS = [
             "properties": {
                 "endpoint": {"type": "string", "description": "API endpoint path"},
                 "payload": {"type": "object", "description": "JSON body"},
+                "params": {
+                    "type": "object",
+                    "description": "Query parameters",
+                    "additionalProperties": {"type": "string"},
+                },
             },
             "required": ["endpoint"],
         },
@@ -261,7 +276,16 @@ async def run_senior_accountant(
             try:
                 result = await WORKFLOWS[wf_name](data, client)
                 has_error = "error" in result or (isinstance(result.get("status"), int) and result["status"] >= 400)
-                logger.info("Workflow '%s' %s: %s", wf_name, "FAILED" if has_error else "OK", json.dumps(result))
+                is_partial = result.get("ok") is False or bool(result.get("_needs_repair"))
+                has_warnings = bool(result.get("warnings"))
+                if has_error:
+                    logger.info("Workflow '%s' FAILED: %s", wf_name, json.dumps(result))
+                elif is_partial:
+                    logger.warning("Workflow '%s' PARTIAL FAILURE: %s", wf_name, result.get("errors", result.get("_needs_repair", "")))
+                elif has_warnings:
+                    logger.info("Workflow '%s' OK (with warnings): %s", wf_name, result.get("warnings"))
+                else:
+                    logger.info("Workflow '%s' OK: %s", wf_name, json.dumps(result))
                 return result
             except Exception as e:
                 logger.exception("Workflow '%s' raised exception", wf_name)
@@ -276,9 +300,9 @@ async def run_senior_accountant(
         if name == "tripletex_get":
             return await client.get(endpoint, params=params)
         elif name == "tripletex_post":
-            return await client.post(endpoint, payload=payload)
+            return await client.post(endpoint, payload=payload, params=params)
         elif name == "tripletex_put":
-            return await client.put(endpoint, payload=payload)
+            return await client.put(endpoint, payload=payload, params=params)
         elif name == "tripletex_delete":
             return await client.delete(endpoint)
         else:

@@ -8,30 +8,44 @@ logger = logging.getLogger("agent.workflows.travel_expense")
 
 
 async def _resolve_employee_id(data: dict, client: TripletexClient) -> int | None:
-    """Resolve employee: create if named in prompt, else use first existing."""
+    """Resolve employee: find by email/name, create if not found. Never picks a random employee."""
     # If explicit ID given
     employee_id = data.get("employeeId")
     if isinstance(employee_id, int):
         return employee_id
 
-    # If employee name/email provided, create them
+    # Try to find by email first
+    email = data.get("employeeEmail")
+    if email:
+        result = await client.get("/employee", params={"email": email, "count": "1"})
+        values = result.get("values", [])
+        if values:
+            logger.info("Found employee by email %s (id=%d)", email, values[0]["id"])
+            return values[0]["id"]
+
+    # If employee name provided, search then create
     first_name = data.get("employeeFirstName")
     last_name = data.get("employeeLastName")
     if first_name and last_name:
+        # Search first to avoid duplicates
+        result = await client.get("/employee", params={"firstName": first_name, "lastName": last_name, "count": "10"})
+        for emp in result.get("values", []):
+            if emp.get("firstName", "").lower() == first_name.lower() and emp.get("lastName", "").lower() == last_name.lower():
+                logger.info("Found employee %s %s (id=%d)", first_name, last_name, emp["id"])
+                return emp["id"]
+
+        # Not found — create
         emp_data = {"firstName": first_name, "lastName": last_name}
-        if data.get("employeeEmail"):
-            emp_data["email"] = data["employeeEmail"]
+        if email:
+            emp_data["email"] = email
         result = await create_employee(emp_data, client)
         emp_id = result.get("value", {}).get("id")
         if emp_id:
             logger.info("Created employee %s %s (id=%d)", first_name, last_name, emp_id)
             return emp_id
 
-    # Fallback: use first existing employee
-    result = await client.get("/employee", params={"count": "1"})
-    employees = result.get("values", [])
-    if employees:
-        return employees[0]["id"]
+    # No identifying info — fail explicitly, don't guess
+    logger.error("Cannot resolve employee for travel expense: no ID, email, or name provided")
     return None
 
 
@@ -93,6 +107,8 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
 
     logger.info("Travel expense created with ID: %d", expense_id)
 
+    errors = []
+
     # Step 3: Resolve payment type for cost lines
     costs = data.get("costs", data.get("costLines", []))
     per_diem = data.get("perDiem")
@@ -122,7 +138,10 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
             per_diem_payload["rateCategory"] = {"id": category_id}
 
         logger.info("Adding per diem compensation to expense %d: %d days × %s = %s", expense_id, days, daily_rate, total)
-        await client.post("/travelExpense/perDiemCompensation", per_diem_payload)
+        pd_result = await client.post("/travelExpense/perDiemCompensation", per_diem_payload)
+        if not pd_result.get("value", {}).get("id"):
+            errors.append(f"Per diem compensation failed: {pd_result}")
+            logger.error("Failed to add per diem to expense %d: %s", expense_id, pd_result)
 
     # Step 5: Add regular cost lines
     for cost in costs:
@@ -148,8 +167,18 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
             cost_payload["currency"] = {"id": cost["currencyId"]}
 
         logger.info("Adding cost line to expense %d: %s", expense_id, desc)
-        await client.post("/travelExpense/cost", cost_payload)
+        cl_result = await client.post("/travelExpense/cost", cost_payload)
+        if not cl_result.get("value", {}).get("id"):
+            errors.append(f"Cost line '{desc}' failed: {cl_result}")
+            logger.error("Failed to add cost line to expense %d: %s", expense_id, cl_result)
 
+    if errors:
+        result["ok"] = False
+        result["errors"] = errors
+        result["_needs_repair"] = (
+            f"Travel expense {expense_id} created but {len(errors)} sub-item(s) failed. "
+            "Use raw API calls (POST /travelExpense/perDiemCompensation or POST /travelExpense/cost) to retry."
+        )
     return result
 
 

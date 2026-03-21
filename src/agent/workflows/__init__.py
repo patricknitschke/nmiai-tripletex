@@ -10,12 +10,15 @@ from .credit_note import create_credit_note
 from .travel_expense import create_travel_expense, delete_travel_expense
 from .project import create_project
 from .voucher import create_supplier_invoice, create_voucher
-from .dimension import create_dimension
+from .dimension import create_dimension, create_dimension_voucher
 from .timesheet import register_time
 from .employment import register_employment
 from .bank_reconciliation import reconcile_bank_statement
 from .expense import register_expense
 from .ledger_analysis import analyze_ledger
+from .payroll import register_payroll
+from .fx_payment import register_fx_payment
+from .project_invoice import create_project_invoice
 
 # Map task_type → workflow function
 # Each workflow takes (data: dict, client: TripletexClient) and returns a result dict
@@ -41,5 +44,9 @@ WORKFLOWS: dict[str, callable] = {
     "register_employment": register_employment,
     "reconcile_bank_statement": reconcile_bank_statement,
     "register_expense": register_expense,
+    "register_payroll": register_payroll,
     "analyze_ledger": analyze_ledger,
+    "register_fx_payment": register_fx_payment,
+    "create_project_invoice": create_project_invoice,
+    "create_dimension_voucher": create_dimension_voucher,
 }

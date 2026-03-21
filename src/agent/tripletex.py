@@ -15,6 +15,7 @@ class TripletexClient:
         self.error_count = 0
         self._auth = ("0", session_token)
         self.token_dead = False  # Circuit breaker: set on expired token 403
+        self._http = httpx.AsyncClient(auth=self._auth, timeout=30.0)
 
     async def get(self, endpoint: str, params: dict | None = None) -> dict:
         return await self._request("GET", endpoint, params=params)
@@ -49,8 +50,7 @@ class TripletexClient:
         if json:
             logger.info("  payload: %s", json)
 
-        async with httpx.AsyncClient(auth=self._auth, timeout=30.0) as http:
-            response = await http.request(method, url, params=params, json=json)
+        response = await self._http.request(method, url, params=params, json=json)
 
         if response.status_code >= 400:
             self.error_count += 1

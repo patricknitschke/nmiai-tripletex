@@ -19,9 +19,45 @@ async def _lookup_vat_type_25(client: TripletexClient) -> int | None:
 
 
 async def create_product(data: dict, client: TripletexClient) -> dict:
-    """Create a product in Tripletex."""
+    """Create a product in Tripletex. Searches first to avoid duplicates, updates if needed."""
+
+    name = data.get("name", "")
+    number = data.get("number")
+
+    # Search for existing product by number or name
+    existing_product = None
+    if number:
+        search = await client.get("/product", params={"number": str(number), "count": "1"})
+        existing = search.get("values", [])
+        if existing:
+            existing_product = existing[0]
+    if not existing_product and name:
+        search = await client.get("/product", params={"name": name, "count": "10"})
+        for prod in search.get("values", []):
+            if prod.get("name", "").lower() == name.lower():
+                existing_product = prod
+                break
+
+    if existing_product:
+        prod_id = existing_product["id"]
+        logger.info("Product already exists (id=%d) — checking if update needed", prod_id)
+        update_payload = {}
+        _UPDATABLE = ("name", "costExcludingVatCurrency", "priceExcludingVatCurrency", "priceIncludingVatCurrency")
+        field_map = {"cost": "costExcludingVatCurrency", "price": "priceExcludingVatCurrency", "priceIncVat": "priceIncludingVatCurrency"}
+        for field in _UPDATABLE:
+            desired = data.get(field) or data.get({v: k for k, v in field_map.items()}.get(field, ""))
+            if desired is not None and desired != existing_product.get(field):
+                update_payload[field] = desired
+        if update_payload:
+            logger.info("Updating product %d with: %s", prod_id, list(update_payload.keys()))
+            put_body = {**existing_product, **update_payload}
+            put_result = await client.put(f"/product/{prod_id}", put_body)
+            return put_result if put_result.get("value") else {"value": existing_product, "update_error": put_result}
+        logger.info("Product %d already matches desired state", prod_id)
+        return {"value": existing_product}
+
     payload = {
-        "name": data.get("name", ""),
+        "name": name,
     }
 
     if data.get("number"):

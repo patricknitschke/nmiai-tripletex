@@ -17,7 +17,7 @@ POST /solve (100s deadline)
     - Passes IDs between workflow calls
 ```
 
-**19 workflows** covering T1/T2/T3 tasks. See `docs/add_workflows.md` for backlog.
+**23 workflows** covering T1/T2/T3 tasks. See `docs/add_workflows.md` for backlog.
 
 **Key design principles:**
 - Chief plans fast (no files), Senior executes with full context
@@ -48,11 +48,11 @@ POST /solve (100s deadline)
 - Receipt expenses: untested — built but never scored
 
 **No workflow / gaps:**
-- Payroll (W1) — no workflow, seen once
+- Payroll (W1) — **register_payroll workflow built (v33)**, handles base salary + bonus via /salary/transaction with specifications. Auto-creates employment if missing.
 - Project invoices (W4) — no workflow, agent spirals on raw API
 - Ledger error correction (W11) — **analyze_ledger workflow built (P3)**, needs competition test
 - Monthly/yearly closing — **Chief bypass added (P2)**, Senior handles directly for closing tasks
-- Custom dimensions — **create_dimension workflow built (v30)**, handles name + values in one call. Voucher dimension linking works via freeAccountingDimension1/2/3
+- Custom dimensions — **create_dimension workflow built (v30)**, handles name + values in one call. Voucher dimension linking works via freeAccountingDimension1/2/3. **create_dimension_voucher combo (v34)** chains dimension creation + voucher posting in one atomic call
 
 ## Weakness Map by Competition Category
 
@@ -79,7 +79,7 @@ POST /solve (100s deadline)
 | Register payment | T2 | `register_payment` | 2/2 | B6 fixed — searches for pre-existing invoice |
 | Credit notes | T2 | `create_credit_note` | 1/5 | VAT interpretation + search-before-create both improved but **never retested** |
 | Supplier invoices | T3 | `create_supplier_invoice` | 1/6 | **B22 FIXED:** Manual 3-posting split with `amount` + no-VAT type. Previous approach used amountGross+vatType which conflicted with account default VAT config |
-| Project invoices | T2-T3 | **MISSING (W4)** | 0 | No workflow. Agent falls back to raw API and spirals |
+| Project invoices | T2-T3 | `create_project_invoice` | 0 | **NEW v34**: Fixed-price % invoicing + time-based invoicing from timesheet hours. Needs competition test |
 | Reminder invoices | T2 | Fallback | 4/6 | Account 1500 is system-managed, voucher posting fails |
 
 ### Travel Expenses (T2)
@@ -201,7 +201,7 @@ POST /solve (100s deadline)
 **All code fixes are deployed. The points are on the table — just need resubmissions.**
 
 **Tasks NOT worth fixing (low ROI):**
-- Payroll (W1): Never seen again after 1 early attempt
+- Payroll (W1): **FIXED** — register_payroll workflow built after 4/4 fail on March 21. Now seen multiple times.
 - Forex disagio: Complex edge case, seen twice — would need dedicated workflow
 
 ## Tracking Files

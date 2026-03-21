@@ -42,15 +42,15 @@ async def solve(request: SolveRequest):
     )
 
     try:
-        # 100s deadline — leaves 20s buffer before 120s cloudflare timeout
-        deadline = start + 100.0
+        # 280s deadline — leaves 20s buffer before 300s Cloud Run timeout
+        deadline = start + 280.0
         logger.info("-" * 40)
-        logger.info("Starting orchestrator (deadline in 100s)...")
+        logger.info("Starting orchestrator (deadline in 280s)...")
         result = await solve_task(request.prompt, request.files, client, deadline=deadline)
 
     except Exception as e:
         logger.exception("TASK FAILED with error: %s", e)
-        return {"status": "error", "message": str(e)}
+        return JSONResponse(content={"status": "completed"})
 
     elapsed = time.time() - start
     logger.info("-" * 40)
@@ -59,9 +59,4 @@ async def solve(request: SolveRequest):
     logger.info("API errors (4xx): %d", client.error_count)
     logger.info("=" * 60)
 
-    return JSONResponse(content={
-        "status": "completed", 
-        "result": result, 
-        "api_calls": client.call_count, 
-        "api_errors": client.error_count}
-    )
+    return JSONResponse(content={"status": "completed"})

@@ -2,15 +2,57 @@ import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
+from .customer import create_customer
+from .employee import create_employee
 
 logger = logging.getLogger("agent.workflows.project")
 
 
 async def create_project(data: dict, client: TripletexClient) -> dict:
-    """Create a project in Tripletex."""
+    """Create a project in Tripletex. Searches first to avoid duplicates, updates if needed."""
 
-    # projectManager is required — use provided ID, look up by email/name, or fallback
+    # Search for existing project by name or number
+    project_name = data.get("name", "")
+    project_number = data.get("number")
+    existing_project = None
+
+    if project_number:
+        search = await client.get("/project", params={"number": str(project_number), "count": "1"})
+        existing = search.get("values", [])
+        if existing:
+            existing_project = existing[0]
+    if not existing_project and project_name:
+        search = await client.get("/project", params={"name": project_name, "count": "10"})
+        for proj in search.get("values", []):
+            if proj.get("name", "").lower() == project_name.lower():
+                existing_project = proj
+                break
+
+    if existing_project:
+        proj_id = existing_project["id"]
+        logger.info("Project already exists (id=%d) — checking if update needed", proj_id)
+        update_payload = {}
+        _SIMPLE = ("name", "description", "startDate", "endDate")
+        for field in _SIMPLE:
+            desired = data.get(field)
+            if desired is not None and desired != existing_project.get(field):
+                update_payload[field] = desired
+        if data.get("isInternal") is not None and data["isInternal"] != existing_project.get("isInternal"):
+            update_payload["isInternal"] = data["isInternal"]
+        if data.get("isFixedPrice") is not None and data["isFixedPrice"] != existing_project.get("isFixedPrice"):
+            update_payload["isFixedPrice"] = data["isFixedPrice"]
+        if update_payload:
+            logger.info("Updating project %d with: %s", proj_id, list(update_payload.keys()))
+            put_body = {**existing_project, **update_payload}
+            put_result = await client.put(f"/project/{proj_id}", put_body)
+            return put_result if put_result.get("value") else {"value": existing_project, "update_error": put_result}
+        logger.info("Project %d already matches desired state", proj_id)
+        return {"value": existing_project}
+
+    # projectManager is required — use provided ID, look up by email/name, or create
     manager_id = data.get("projectManagerId")
+    pm_first = None
+    pm_last = None
 
     # Try to resolve by email first (most reliable)
     if not manager_id:
@@ -48,20 +90,25 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
                     logger.info("Resolved project manager by full name '%s' → id=%d", pm_name, manager_id)
                     break
 
-    # Fallback: grab any employee
+    # PM not found — create if we have name/email info
+    if not manager_id and (pm_first and pm_last):
+        logger.info("Project manager %s %s not found, creating", pm_first, pm_last)
+        emp_data = {"firstName": pm_first, "lastName": pm_last}
+        pm_email = data.get("projectManagerEmail")
+        if pm_email:
+            emp_data["email"] = pm_email
+        emp_result = await create_employee(emp_data, client)
+        manager_id = emp_result.get("value", {}).get("id")
+        if manager_id:
+            logger.info("Created project manager %s %s (id=%d)", pm_first, pm_last, manager_id)
+
+    # Still no PM — last resort: use first existing employee (Tripletex requires a PM)
     if not manager_id:
-        emp_result = await client.get("/employee", params={"count": "10"})
+        emp_result = await client.get("/employee", params={"count": "1"})
         employees = emp_result.get("values", [])
         if employees:
-            # Prefer non-default employees (skip "Historisk ansatt" etc.)
-            for emp in employees:
-                if emp.get("userType") is not None:
-                    manager_id = emp["id"]
-                    break
-            if not manager_id:
-                manager_id = employees[-1]["id"]  # last resort: most recently created
-    if manager_id:
-        logger.info("Using employee %d as project manager", manager_id)
+            manager_id = employees[0]["id"]
+            logger.warning("No PM info provided, using existing employee %d as fallback", manager_id)
 
     if not manager_id:
         logger.error("No employee available for project manager")
@@ -83,8 +130,15 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
         payload["isInternal"] = data["isInternal"]
     if data.get("isFixedPrice") is not None:
         payload["isFixedPrice"] = data["isFixedPrice"]
+    if data.get("fixedprice") is not None or data.get("fixedPrice") is not None:
+        payload["fixedprice"] = data.get("fixedprice") or data.get("fixedPrice")
+    if data.get("budget") is not None:
+        # budget often means fixed price in competition tasks
+        if "fixedprice" not in payload:
+            payload["fixedprice"] = data["budget"]
+            payload["isFixedPrice"] = True
 
-    # Link to customer — resolve by ID, org number, or name
+    # Link to customer — resolve by ID, org number, or name; create if missing
     customer_id = data.get("customerId")
     if not customer_id:
         customer_name = data.get("customerName")
@@ -95,13 +149,23 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
                 customer_list = customers.get("values", [])
                 if customer_list:
                     customer_id = customer_list[0]["id"]
-            elif customer_name:
+            if not customer_id and customer_name:
                 customers = await client.get("/customer", params={"name": customer_name, "count": "10"})
                 for cust in customers.get("values", []):
                     if cust.get("name", "").lower() == customer_name.lower():
                         customer_id = cust["id"]
                         break
-            if customer_id:
+            if not customer_id:
+                # Customer not found — create it
+                cust_data = {"name": customer_name or ""}
+                if org_number:
+                    cust_data["organizationNumber"] = org_number
+                logger.info("Customer not found, creating: %s", customer_name or org_number)
+                cust_result = await create_customer(cust_data, client)
+                customer_id = cust_result.get("value", {}).get("id")
+                if customer_id:
+                    logger.info("Created customer '%s' (id=%d)", customer_name or org_number, customer_id)
+            else:
                 logger.info("Resolved customer '%s' → id=%d", customer_name or org_number, customer_id)
     if customer_id:
         payload["customer"] = {"id": customer_id}
@@ -121,6 +185,19 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
     project_id = result.get("value", {}).get("id")
     if project_id:
         logger.info("Project created with ID: %d", project_id)
+
+        # Free GET: verify project manager was set correctly
+        verify = await client.get(f"/project/{project_id}", params={"fields": "id,name,projectManager(*)"})
+        actual = verify.get("value", {})
+        actual_pm = actual.get("projectManager", {})
+        actual_pm_id = actual_pm.get("id") if isinstance(actual_pm, dict) else actual_pm
+        if actual_pm_id != manager_id:
+            result.setdefault("warnings", []).append(
+                f"projectManager: sent id={manager_id}, stored id={actual_pm_id}"
+            )
+            logger.warning("Project %d PM mismatch: expected %d, got %s", project_id, manager_id, actual_pm_id)
+        else:
+            logger.info("Project %d verified: PM=%d OK", project_id, manager_id)
     else:
         logger.error("Failed to create project: %s", result)
 

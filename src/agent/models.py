@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class FileAttachment(BaseModel):
@@ -14,5 +14,5 @@ class TripletexCredentials(BaseModel):
 
 class SolveRequest(BaseModel):
     prompt: str
-    files: list[FileAttachment] = []
+    files: list[FileAttachment] = Field(default_factory=list)
     tripletex_credentials: TripletexCredentials

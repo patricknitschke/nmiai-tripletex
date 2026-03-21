@@ -44,20 +44,12 @@ See `docs/task_plan.md` → "Weakness Map by Competition Category" for full cont
 - **Impact:** Unblocks bank recon supplier payments (3-6 pts) + standalone supplier invoices (6 pts). Needs retest.
 
 ### W12: Foreign Currency Payment + Exchange Difference (disagio/agio)
-- **Status:** SEEN — 1/4, no dedicated workflow
-- **Priority:** Medium — T3 task, 4 checks × 56 variants = potentially high points
-- **API:** PUT /invoice/{id}/:payment + POST /ledger/voucher
-- **Example prompt (PT):** "Enviámos uma fatura de 19074 EUR ao Oceano Lda taxa 11.69 NOK/EUR. Cliente pagou a 11.28 NOK/EUR. Registe pagamento e lance diferença cambial (disagio)."
-- **What went wrong (v21):**
-  1. Chief timed out → no plan
-  2. Senior spent 10 iterations investigating (customer, invoices, orders, vouchers, postings) but 0 POSTs
-  3. Never registered payment or posted exchange difference
-- **What the workflow needs:**
-  1. Find existing invoice for the customer (by org number or name)
-  2. Register payment at the new exchange rate amount (19074 × 11.28 = 215,154.72 NOK)
-  3. Calculate exchange difference: (11.69 - 11.28) × 19074 = 7,820.34 NOK loss
-  4. Post disagio voucher: debit 8060 (Valutadifferanse/exchange loss), credit 1500 (AR) or let it balance via invoice
-  5. Or if agio (gain): debit 1500, credit 8060
+- **Status:** ✅ IMPLEMENTED (v34)
+- **What was done:** New `register_fx_payment` workflow. Finds invoice by customer, registers payment at actual NOK received (amount × paymentRate), calculates exchange difference (invoiceRate - paymentRate) × amount, posts disagio/agio voucher to account 8060 vs 1500.
+- **Files created:** `src/agent/workflows/fx_payment.py`
+- **Files changed:** `src/agent/workflows/__init__.py`, `src/agent/workflows/schemas.py`
+- **Schema fields:** invoiceAmountForeign, invoiceRate, paymentRate, currency, customerName/Org
+- **Impact:** Unblocks 2+ FX tasks that scored 0
 
 ### B19 (NEW): Bank recon — undetected customer payment descriptions
 - **Status:** LOW RISK — currently working because bank CSV is always Norwegian
