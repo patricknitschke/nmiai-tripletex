@@ -48,7 +48,7 @@ POST /solve (100s deadline)
 - Receipt expenses: untested — built but never scored
 
 **No workflow / gaps:**
-- Payroll (W1) — **register_payroll workflow built (v33)**, handles base salary + bonus via /salary/transaction with specifications. Auto-creates employment if missing.
+- Payroll (W1) — **register_payroll workflow built (v33)**, handles base salary + bonus via /salary/transaction with specifications. Auto-creates employment if missing. **B27 fix**: full GET before PUT for version. **B28 fix**: employment now linked to company division via GET /division (required for salary transactions).
 - Project invoices (W4) — no workflow, agent spirals on raw API
 - Ledger error correction (W11) — **analyze_ledger workflow built (P3)**, needs competition test
 - Monthly/yearly closing — **Chief bypass added (P2)**, Senior handles directly for closing tasks

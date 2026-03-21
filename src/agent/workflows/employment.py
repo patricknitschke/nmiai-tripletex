@@ -53,6 +53,12 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
         "isMainEmployer": True,
         "taxDeductionCode": "loennFraHovedarbeidsgiver",
     }
+    # Link employment to company division (required for salary transactions)
+    div_result = await client.get("/division", params={"count": "1"})
+    divisions = div_result.get("values", [])
+    if divisions:
+        employment_payload["division"] = {"id": divisions[0]["id"]}
+        logger.info("Linking employment to division: id=%d name=%s", divisions[0]["id"], divisions[0].get("name"))
 
     logger.info("Creating employment for employee %d (startDate=%s)", employee_id, start_date)
     employment_result = await client.post("/employee/employment", employment_payload)

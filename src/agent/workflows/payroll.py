@@ -51,8 +51,9 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
 
     if not employments:
         logger.info("No employment record found, creating one...")
-        # Need dateOfBirth for employment creation — update employee if missing
-        emp_info = emp_detail.get("value", {})
+        # Need dateOfBirth for employment creation — fetch full employee for version + dateOfBirth
+        emp_full = await client.get(f"/employee/{employee_id}")
+        emp_info = emp_full.get("value", {})
         if not emp_info.get("dateOfBirth"):
             dob = data.get("dateOfBirth", "1990-01-01")
             logger.info("Setting dateOfBirth to %s for employment requirement", dob)
@@ -69,6 +70,10 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
             "isMainEmployer": True,
             "taxDeductionCode": "loennFraHovedarbeidsgiver",
         }
+        # Link employment to company division (required for salary transactions)
+        division_id = await _resolve_division(client)
+        if division_id:
+            employment_payload["division"] = {"id": division_id}
         emp_result = await client.post("/employee/employment", employment_payload)
         employment_id = emp_result.get("value", {}).get("id")
         if not employment_id:
@@ -188,6 +193,16 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
         }
 
     return {"error": "Failed to create salary transaction", "details": result}
+
+
+async def _resolve_division(client: TripletexClient) -> int | None:
+    """Look up the first available company division."""
+    result = await client.get("/division", params={"count": "1"})
+    divisions = result.get("values", [])
+    if divisions:
+        logger.info("Found division: id=%d name=%s", divisions[0]["id"], divisions[0].get("name"))
+        return divisions[0]["id"]
+    return None
 
 
 async def _resolve_salary_type(client: TripletexClient, name: str) -> int | None:
