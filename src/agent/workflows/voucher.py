@@ -112,6 +112,7 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     invoice_number = data.get("invoiceNumber", "")
     vat_rate = data.get("vatRate", 25)
     expense_account = data.get("expenseAccount", data.get("account"))
+    voucher_type = data.get("voucherType")
 
     # Calculate amounts
     amount_incl = data.get("amountInclVat") or data.get("amount") or data.get("totalAmount")
