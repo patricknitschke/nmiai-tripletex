@@ -30,9 +30,10 @@ def _vertex_location_for_model(model: str) -> str:
 # Simple completion (used by interpreter)
 # ---------------------------------------------------------------------------
 
-async def complete(system: str, user_content: list[dict], max_tokens: int = 2048) -> str:
+async def complete(system: str, user_content: list[dict], max_tokens: int = 2048, model: str | None = None) -> str:
     """Send a single message and return the text response."""
-    provider, model = _get_config()
+    provider, default_model = _get_config()
+    model = model or default_model
     logger.info("LLM complete: provider=%s, model=%s", provider, model)
 
     if provider == "anthropic":

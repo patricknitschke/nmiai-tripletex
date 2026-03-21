@@ -239,19 +239,16 @@ class TestRegisterPayment:
 
 
 # ============================================================
-# create_supplier_invoice — 3-posting structure (B22/B23 fix)
+# create_supplier_invoice — 1-posting structure (B25v2 fix)
+# Tripletex auto-generates 2710 (VAT) + 2400 (supplier debt)
 # ============================================================
 
 class TestCreateSupplierInvoice:
 
-    async def test_three_posting_structure(self, mock_client):
-        """Must create 3 postings: expense debit + VAT debit + supplier credit."""
+    async def test_single_posting_structure(self, mock_client):
+        """B25v2: Must create 1 posting with amountGross + vatType + supplier."""
         mock_client.when_get("/customer", {"values": [make_customer(id=5, name="Polaris AS")]})
-        mock_client.when_get("/ledger/account", [
-            {"values": [make_account(id=100, number=7300, name="Kontortjenester")]},  # first call: expense
-        ])
-        # We need to handle multiple account lookups — use specific patterns
-        mock_client._responses[("GET", "/ledger/account")] = {"values": [make_account(id=100, number=7300)]}
+        mock_client.when_get("/ledger/account", {"values": [make_account(id=100, number=7300, name="Kontortjenester")]})
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
         mock_client.when_post("/ledger/voucher", {"value": {"id": 200}})
 
@@ -268,16 +265,16 @@ class TestCreateSupplierInvoice:
         post_calls = mock_client.get_calls("POST", "/ledger/voucher")
         assert len(post_calls) >= 1
         postings = post_calls[0]["payload"]["postings"]
-        assert len(postings) == 3  # expense + VAT + supplier credit
+        assert len(postings) == 1  # single posting, Tripletex auto-generates rest
 
-        # Verify amounts: 10000 excl + 2500 VAT = 12500 incl
-        amounts = sorted([p["amount"] for p in postings])
-        assert amounts[0] == -12500  # credit (supplier)
-        assert amounts[1] == 2500    # VAT debit
-        assert amounts[2] == 10000   # expense debit
+        p = postings[0]
+        assert p["amountGross"] == 12500  # gross amount incl VAT
+        assert "vatType" in p  # real VAT type (25% input), not 0%
+        assert p["supplier"]["id"] == 5
+        assert p["account"]["id"] == 100
 
     async def test_amount_calculation(self, mock_client):
-        """amountInclVat=12500 with 25% VAT -> excl=10000, vat=2500."""
+        """amountInclVat=12500 with 25% VAT -> single posting with amountGross=12500."""
         mock_client.when_get("/customer", {"values": []})
         mock_client.when_post("/customer", {"value": make_customer(id=1)})
         mock_client.when_get("/ledger/account", {"values": [make_account()]})
@@ -293,23 +290,19 @@ class TestCreateSupplierInvoice:
 
         post_call = mock_client.get_calls("POST", "/ledger/voucher")[0]
         postings = post_call["payload"]["postings"]
-        expense_posting = [p for p in postings if p["amount"] > 0 and "MVA" not in p.get("description", "")][0]
-        vat_posting = [p for p in postings if p["amount"] > 0 and "MVA" in p.get("description", "")][0]
-        credit_posting = [p for p in postings if p["amount"] < 0][0]
-
-        assert expense_posting["amount"] == 10000
-        assert vat_posting["amount"] == 2500
-        assert credit_posting["amount"] == -12500
+        assert len(postings) == 1
+        assert postings[0]["amountGross"] == 12500
 
 
 # ============================================================
-# register_expense — 3-posting structure (B24 fix)
+# register_expense — 2-posting structure (B25v2 fix)
+# Tripletex auto-generates 2710 (VAT) from vatType on expense line
 # ============================================================
 
 class TestRegisterExpense:
 
-    async def test_three_posting_expense(self, mock_client):
-        """Expense must use 3-posting: expense net + VAT 2710 + bank credit."""
+    async def test_two_posting_expense(self, mock_client):
+        """B25v2: Expense uses 2 postings: expense (amountGross + vatType) + bank credit."""
         mock_client.when_get("/ledger/account", {"values": [make_account(id=50, number=6540)]})
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
         mock_client.when_get("/department", {"values": [make_department(id=10, name="Lager")]})
@@ -326,12 +319,13 @@ class TestRegisterExpense:
         post_calls = mock_client.get_calls("POST", "/ledger/voucher")
         assert len(post_calls) >= 1
         postings = post_calls[0]["payload"]["postings"]
-        assert len(postings) == 3
+        assert len(postings) == 2  # expense + bank credit
 
-        amounts = sorted([p["amount"] for p in postings])
-        assert amounts[0] == -500  # credit bank
-        assert amounts[1] == 100   # VAT (500/1.25 = 400, VAT = 100)
-        assert amounts[2] == 400   # expense net
+        expense_posting = [p for p in postings if p["amountGross"] > 0][0]
+        bank_posting = [p for p in postings if p["amountGross"] < 0][0]
+        assert expense_posting["amountGross"] == 500
+        assert bank_posting["amountGross"] == -500
+        assert "vatType" in expense_posting  # real VAT type (25% input)
 
     async def test_department_linked(self, mock_client):
         """Expense posting should include department."""
@@ -348,7 +342,7 @@ class TestRegisterExpense:
         }, mock_client)
 
         post_call = mock_client.get_calls("POST", "/ledger/voucher")[0]
-        expense_posting = [p for p in post_call["payload"]["postings"] if p["amount"] > 0 and "MVA" not in p.get("description", "")][0]
+        expense_posting = [p for p in post_call["payload"]["postings"] if p["amountGross"] > 0][0]
         assert expense_posting["department"]["id"] == 42
 
 

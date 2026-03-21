@@ -44,21 +44,21 @@ async def _run_hybrid_mode(
 ) -> dict:
     """Hybrid mode: Chief plans (1 LLM call), Senior executes with plan as context."""
 
-    # Fast-path: skip Chief for multi-voucher/closing tasks where Chief always times out
-    # generating 800+ token plans. Senior handles these better without planning overhead.
-    _CLOSING_KEYWORDS = [
-        "closing", "lukking", "avslutning", "årsoppgjør", "årsavslutning",
-        "depreciation", "avskrivning", "avskriving",
-        "periodisering", "accrual", "provision",
-        "monthly close", "cierre mensual", "clôture", "encerramento",
-        "year-end", "yearend", "balance de saldos",
-        # Dimension tasks — Chief always times out, Senior handles raw API better
-        "dimensjon", "dimension", "dimensão", "dimensión",
-    ]
-    prompt_lower = prompt.lower()
-    if any(kw in prompt_lower for kw in _CLOSING_KEYWORDS):
-        logger.info("Multi-voucher/closing task detected — skipping Chief, Senior handles directly")
-        return await run_senior_accountant(prompt, files, client, deadline=deadline)
+    # # Fast-path: skip Chief for multi-voucher/closing tasks where Chief always times out
+    # # generating 800+ token plans. Senior handles these better without planning overhead.
+    # _CLOSING_KEYWORDS = [
+    #     "closing", "lukking", "avslutning", "årsoppgjør", "årsavslutning",
+    #     "depreciation", "avskrivning", "avskriving",
+    #     "periodisering", "accrual", "provision",
+    #     "monthly close", "cierre mensual", "clôture", "encerramento",
+    #     "year-end", "yearend", "balance de saldos",
+    #     # Dimension tasks — Chief always times out, Senior handles raw API better
+    #     "dimensjon", "dimension", "dimensão", "dimensión",
+    # ]
+    # prompt_lower = prompt.lower()
+    # if any(kw in prompt_lower for kw in _CLOSING_KEYWORDS):
+    #     logger.info("Multi-voucher/closing task detected — skipping Chief, Senior handles directly")
+    #     return await run_senior_accountant(prompt, files, client, deadline=deadline)
 
     # Stage 1: Chief produces a strategic plan (50s max — PDF inputs can be slow)
     logger.info("=" * 40)
@@ -66,9 +66,9 @@ async def _run_hybrid_mode(
     try:
         # Don't pass files (PDFs/CSVs) to Chief — it only needs the text prompt to plan.
         # Senior gets the full files for data extraction.
-        thinking, steps = await asyncio.wait_for(chief_plan(prompt, []), timeout=20.0)
+        thinking, steps = await asyncio.wait_for(chief_plan(prompt, []), timeout=30.0)
     except asyncio.TimeoutError:
-        logger.warning("Chief planning timed out after 20s — skipping to Senior")
+        logger.warning("Chief planning timed out after 30s — skipping to Senior")
         return await run_senior_accountant(prompt, files, client, deadline=deadline)
 
     if not steps:

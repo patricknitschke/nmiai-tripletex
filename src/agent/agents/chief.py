@@ -9,9 +9,14 @@ import json
 import logging
 from datetime import date
 
+import os
+
 from ..llm import complete
 from ..utils import build_content, parse_json
 from ..workflows.schemas import TASK_SCHEMAS
+
+# Fast model for planning — no need for the heavy model, Chief just outputs small JSON
+CHIEF_MODEL = os.environ.get("CHIEF_MODEL", "gemini-2.5-flash")
 
 logger = logging.getLogger("agent.chief")
 
@@ -68,7 +73,7 @@ Return ONLY valid JSON:
   "thinking": "Your reasoning about dependencies, order of operations, and approach",
   "steps": [
     {{
-      "task": "Clear English description including HOW to accomplish this step",
+      "task": "Short description of the task to perform",
       "suggested_workflow": "workflow_name or 'fallback' if no workflow fits"
     }}
   ]
@@ -113,7 +118,7 @@ async def chief_plan(prompt: str, files: list) -> tuple[str, list[dict]]:
     system = PLAN_PROMPT.format(today=today, workflow_catalog=catalog)
 
     content = build_content(prompt, files)
-    raw = await complete(system, content, max_tokens=8192)
+    raw = await complete(system, content, max_tokens=2048, model=CHIEF_MODEL)
     logger.info("Chief plan raw: %s", raw)
 
     try:
