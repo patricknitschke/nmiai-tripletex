@@ -40,6 +40,13 @@ Tracking new workflows and enhancements needed based on competition task logs.
 - **Priority:** Low — may appear in T3
 - **API:** Unknown
 
+### B7: Proxy Token Expiry on Long Tasks
+- **Status:** INVESTIGATE
+- **Priority:** High — kills any task that takes >60s if concurrent tasks share the token
+- **Symptom:** All API calls return 403 "Invalid or expired proxy token"
+- **Possible cause:** Cloud Run concurrency >1, or tasks running too long
+- **Fix options:** Set Cloud Run max-instances/concurrency to 1, or detect 403 and bail early
+
 ### W8: Supplier Payment
 - **Status:** NOT SEEN YET
 - **Priority:** Low — may appear in T3
