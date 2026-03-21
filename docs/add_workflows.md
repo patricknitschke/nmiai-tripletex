@@ -29,28 +29,19 @@ See `docs/task_plan.md` → "Weakness Map by Competition Category" for full cont
 
 ## Open Enhancements
 
-### B16 (NEW): Employee Start-Date Routing — 2-4 pts
-- **Status:** BUG CONFIRMED — needs fix
-- **What:** Chief picks `create_employee` instead of `register_employment` when prompt mentions a start date WITHOUT employment contract keywords (arbeidskontrakt/tilbudsbrev).
-- **Evidence:** v19 Nathan Moreau task scored 5/7 — employee created but no employment record (startDate ignored). Schema notes have the hint but Chief's PLAN_PROMPT doesn't enforce it.
-- **Fix:** Add explicit instruction to Chief PLAN_PROMPT:
-  ```
-  - If the prompt mentions a START DATE for an employee (date de début/tiltredelse/fecha de inicio/
-    Startdatum/data de início/Anfangsdatum), ALWAYS use register_employment instead of create_employee.
-  ```
-- **File:** `src/agent/agents/chief.py` — add after line 98 (the "employment contracts" line)
-- **Impact:** Employee tasks with start dates go from 5/7 → 7/7
+### B16: Employee Start-Date Routing — 2-4 pts
+- **Status:** ✅ FIXED in v27
+- **What was done:** Added start-date keywords to both Chief PLAN_PROMPT and Senior SYSTEM_PROMPT — routes to `register_employment` when prompt mentions tiltredelse/startdato/fecha de inicio/date de début/etc.
+- **Files changed:** `src/agent/agents/chief.py`, `src/agent/agents/senior.py`
 
-### B18 (NEW): Supplier Invoice voucherType Conflict — blocks P1 bank recon
-- **Status:** BUG CONFIRMED — code fix exists but may not be deployed
-- **What:** voucherType "Leverandørfaktura" triggers Tripletex system-generated posting rules that conflict with our explicit postings. First attempt fails (vatType conflict), retry pops voucherType but may also fail.
-- **Evidence:** v21 bank recon — "both vatType AND manual split rejected". 4 consecutive bank recon tasks stuck at 1/2.
-- **Fix (in code at voucher.py line 250):** Already pops voucherType on retry. But need to verify:
-  1. Try WITHOUT voucherType on FIRST attempt (not just retry)
-  2. Ensure manual split amounts balance exactly
-  3. Possibly use a generic voucherType (e.g. "Manuell") instead of "Leverandørfaktura"
-- **File:** `src/agent/workflows/voucher.py` — `create_supplier_invoice()` function
-- **Impact:** Bank recon supplier payments (3-6 pts across 4 tasks) + standalone supplier invoices (6 pts)
+### B18: Supplier Invoice voucherType Conflict — blocks P1 bank recon
+- **Status:** ✅ FIXED in v27
+- **What was done:**
+  1. voucherType=None on FIRST attempt (never set "Leverandørfaktura")
+  2. On "systemgenererte" 422 error: retry with sendToLedger=false (draft mode)
+  3. If that fails: manual 3-posting split (net + VAT + credit) with sendToLedger=false
+- **Files changed:** `src/agent/workflows/voucher.py`
+- **Impact:** Unblocks bank recon supplier payments (3-6 pts) + standalone supplier invoices (6 pts). Needs retest.
 
 ### W12: Foreign Currency Payment + Exchange Difference (disagio/agio)
 - **Status:** SEEN — 1/4, no dedicated workflow
@@ -108,9 +99,9 @@ See `docs/task_plan.md` → "Weakness Map by Competition Category" for full cont
 - **Theory:** Reminder invoice auto-posts to 1500, making separate voucher redundant
 
 ### Voucher "systemgenererte" error
-- **Status:** SAFETY NET ADDED (v20)
-- **What:** When vatType on a posting triggers system-generated conflict, supplier invoice workflow retries with manual 3-posting split (net + VAT + credit). create_voucher logs clear warning.
-- **Root cause:** Setting vatType on a posting makes Tripletex auto-generate VAT postings that conflict with explicit postings.
+- **Status:** ✅ FULLY FIXED in v27
+- **Root cause:** Account 7300 has default VAT config in Tripletex. Setting vatType OR voucherType="Leverandørfaktura" triggers system-generated postings that conflict with explicit postings.
+- **Fix chain:** (1) No voucherType on first attempt → (2) sendToLedger=false retry → (3) manual 3-posting split with sendToLedger=false
 
 ## Fixed (remove from active tracking)
 
@@ -131,7 +122,10 @@ See `docs/task_plan.md` → "Weakness Map by Competition Category" for full cont
 | Voucher dimension support | dimensionId field in create_voucher | v17 |
 | Slim Chief catalog | Names + notes only, no field specs | v18 |
 | STYRK extraction hint | Senior prompt lists all employment PDF fields | v19 |
-| Chief routes register_employment | When start date mentioned in prompt | v20 (PARTIAL — schema hint exists but Chief PLAN_PROMPT doesn't enforce. See B16) |
+| B16: Employee start-date routing | Chief + Senior prompt route to register_employment when start date keywords found | v27 |
+| B18: Supplier invoice voucherType | voucherType=None + sendToLedger=false retry + manual 3-posting fallback | v27 |
+| P1: Bank recon supplier payments | Auto-creates supplier invoices from CSV + 6-language supplier name extraction | v27 |
+| Token dead circuit breaker | Senior stops calling tools when Tripletex token expires | v27 |
 
 ## Completed Workflows (17 total)
 

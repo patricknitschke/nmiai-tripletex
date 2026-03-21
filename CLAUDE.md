@@ -23,5 +23,6 @@ This is a competition agent that solves Tripletex accounting tasks via an LLM + 
 
 ## Actions when given a log
 1. Log it into docs/tasks.csv
-2. Analyse the agent and draft a fix, new workflow etc. into the docs/task_plan.md
-3. Implement the changes in the code.
+2. If the score is not perfect, analyse the agent and draft a fix, new workflow etc. into the docs/task_plan.md
+3. If the score is perfect, look for efficiency gains (only on perfect scores): up to 2x based on Tripletex API call count + error count
+4. Implement the changes in the code.

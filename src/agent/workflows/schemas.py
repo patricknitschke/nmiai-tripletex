@@ -165,7 +165,7 @@ TASK_SCHEMAS: dict[str, dict] = {
         ],
     },
     "create_travel_expense": {
-        "api_endpoint": "POST /travelExpense + POST /travelExpense/cost per line",
+        "api_endpoint": "POST /travelExpense + POST /travelExpense/perDiemCompensation + POST /travelExpense/cost per line",
         "notes": (
             "If the prompt names an employee (with name/email), include their details so the workflow can create them. "
             "Each cost line requires: date, amountCurrencyIncVat. Payment type is auto-resolved. "

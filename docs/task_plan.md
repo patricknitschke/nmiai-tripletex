@@ -17,7 +17,7 @@ POST /solve (100s deadline)
     - Passes IDs between workflow calls
 ```
 
-**17 workflows** covering T1/T2/T3 tasks. See `docs/add_workflows.md` for backlog.
+**18 workflows** covering T1/T2/T3 tasks. See `docs/add_workflows.md` for backlog.
 
 **Key design principles:**
 - Chief plans fast (no files), Senior executes with full context
@@ -27,14 +27,14 @@ POST /solve (100s deadline)
 - 100s deadline with 20s buffer before 120s cloudflare timeout
 - BETA endpoints blocked, lookup_api flags them
 
-## Current State — v20+ (Competition Day 3)
+## Current State — v28 (Competition Day 3, deployed)
 
 **Fully supported (proven scores):**
 - Customer creation (8/8, 7/7, 7/7) — bulletproof, all languages
 - Invoice creation (4/4, 5/5) — VAT, products, sendToCustomer
 - Supplier creation (4/4) — isSupplier=true, email in both fields
 - Payment registration (2/2, 2/2) — finds pre-existing invoice, uses actual amount
-- Project creation (4/4) — resolves customer + PM
+- Project creation (4/4) — resolves customer + PM (v28: projectManagerEmail/Name support)
 - Department creation (3/3) — parallel creation with unique numbers
 - Product creation (5/5) — VAT auto-resolved
 - Employee creation (7/7) — with employment record
@@ -42,8 +42,8 @@ POST /solve (100s deadline)
 
 **Supported but struggling:**
 - Credit notes: 1/5 — VAT fix deployed (9v), never retested
-- Supplier invoices: 1/6 — B11 VAT fix deployed, blocked by 429 rate limits
-- Bank reconciliation: 1/2 (×3) — customer payments 5/5 perfect, supplier payments **fixed (P1: auto-creates supplier invoices from CSV)**
+- Supplier invoices: 1/6 — **B22 fix deployed**: manual 3-posting split with `amount` + no-VAT type, needs retest
+- Bank reconciliation: 1/2 (×3) — customer payments 5/5 perfect, supplier payments **fixed in v27 (P1: auto-creates supplier invoices + B18 voucherType fix + sendToLedger=false retry)** — needs retest
 - Travel expenses: 3/6 — untested since B7 proxy fix
 - Receipt expenses: untested — built but never scored
 
@@ -78,14 +78,14 @@ POST /solve (100s deadline)
 | Invoice + payment | T2 | `create_invoice` + `register_payment` | 2/2 | ID passing between steps sometimes breaks |
 | Register payment | T2 | `register_payment` | 2/2 | B6 fixed — searches for pre-existing invoice |
 | Credit notes | T2 | `create_credit_note` | 1/5 | VAT interpretation + search-before-create both improved but **never retested** |
-| Supplier invoices | T3 | `create_supplier_invoice` | 1/6 | B11 VAT direction fixed in code, blocked by 429s + "systemgenererte" conflicts |
+| Supplier invoices | T3 | `create_supplier_invoice` | 1/6 | **B22 FIXED:** Manual 3-posting split with `amount` + no-VAT type. Previous approach used amountGross+vatType which conflicted with account default VAT config |
 | Project invoices | T2-T3 | **MISSING (W4)** | 0 | No workflow. Agent falls back to raw API and spirals |
 | Reminder invoices | T2 | Fallback | 4/6 | Account 1500 is system-managed, voucher posting fails |
 
 ### Travel Expenses (T2)
 | Task | Tier | Workflow | Best Score | Weakness |
 |---|---|---|---|---|
-| Create travel expense | T2 | `create_travel_expense` | 3/6 | Untested since B7 proxy fix. Payment type can be None → silent 422 |
+| Create travel expense | T2 | `create_travel_expense` | 4/6 | **B21 FIXED:** Per diem was added as cost line, now uses `/travelExpense/perDiemCompensation` endpoint with rateType+rateCategory |
 | Delete travel expense | T2 | `delete_travel_expense` | — | Built, never seen in competition |
 | Receipt expenses | T3 | `register_expense` | — | Built but never scored. None propagation bug in account resolution |
 
@@ -93,7 +93,7 @@ POST /solve (100s deadline)
 | Task | Tier | Workflow | Best Score | Weakness |
 |---|---|---|---|---|
 | Create project | T2 | `create_project` | 4/4 | None |
-| Full project lifecycle | T3 | Multi-workflow | 2/7 | 4-5 chained workflows. Timesheet had json= bug. Deadline pressure (195s) |
+| Full project lifecycle | T3 | Multi-workflow | 6/7 (v21), 2/7 (v28 pre-fix) | **v28 FIXED:** B19 timesheet date floor + PM email. v21 scored 6/7 (only supplier invoice failed). v28 pre-fix regressed due to new date bug — now fixed with clamp + prompt |
 
 ### Corrections (T2-T3)
 | Task | Tier | Workflow | Best Score | Weakness |
@@ -122,7 +122,7 @@ POST /solve (100s deadline)
 |---|---|---|---|
 | **T1** (×1, max 2pts) | ~95% | Bulletproof | Only gap: employee+startDate routing (minor) |
 | **T2** (×2, max 4pts) | ~70% | Some fragile | Credit notes weak (1/5), travel untested, project invoices missing (W4), multi-step ID passing unreliable |
-| **T3** (×3, max 6pts) | ~40% | Biggest point bleed | Bank recon supplier payments broken, ledger corrections 0/4, closing times out, payroll missing (W1), receipt expense untested |
+| **T3** (×3, max 6pts) | ~50% | Biggest point bleed | Bank recon supplier payments broken, ledger corrections 0/4, closing needs separate vouchers, project lifecycle improved (6/7→retest), receipt expense dead (Chief timeout) |
 
 ## Priority Fixes by Expected Points
 
@@ -174,33 +174,40 @@ POST /solve (100s deadline)
 | B13 | Chief receives PDFs | Slow planning → no time for execution | Skip files in chief_plan() |
 | B14 | 429 RESOURCE_EXHAUSTED | Unhandled crash on rate limit | Retry with backoff (3 attempts) |
 | 9v | "sin IVA" = 0% VAT | Wrong invoice amounts | Prompt: excl-VAT ≠ exempt |
-| **B16** | **Employee start-date routing** | **5/7 → 7/7 on employee tasks** | **OPEN — Chief PLAN_PROMPT needs start-date keyword** |
-| **B18** | **Supplier invoice voucherType** | **Blocks P1 bank recon (1/2 ×4)** | **OPEN — try without voucherType on first attempt** |
+| B16 | Employee start-date routing | 5/7 → 7/7 on employee tasks | ✅ FIXED v27 — Chief PLAN_PROMPT has start-date keywords + Senior prompt too |
+| B18 | Supplier invoice voucherType | Blocks P1 bank recon (1/2 ×4) | ✅ FIXED v27 — voucherType=None on first attempt + sendToLedger=false retry |
+| B19 | Timesheet date before project start | Project lifecycle 5/7→2/7 regression | ✅ FIXED v28 — register_time clamps date to project startDate + Chief/Senior prompts warn against past dates |
+| B20 | Wrong project manager (fallback grab) | PM set to random employee | ✅ FIXED v28 — create_project resolves by projectManagerEmail → projectManagerName → firstName+lastName → fallback |
+| B21 | Per diem added as cost line | 2/6 checks fail on travel expense — perDiemCompensations empty | ✅ FIXED — uses `/travelExpense/perDiemCompensation` endpoint with rateType+rateCategory lookup |
+| B22 | Supplier invoice "systemgenererte" 422 | 1/6 on supplier invoices — account default VAT config conflicts with amountGross+vatType | ✅ FIXED — manual 3-posting split with `amount` (net) + explicit no-VAT type. Also hardened `_post_voucher` retries with no-VAT type |
 
-## Day 3 Afternoon — Priority Action Queue (March 21, 14:30)
+## Day 3 Evening — Priority Action Queue (March 21)
 
-**Full log analysis completed: 54 submissions across v13-v21.**
+**v28 deployed with B19+B20 fixes (timesheet date clamp + PM resolution). All P1-P4 ready.**
 
-| # | Action | Expected Points | Effort | Risk |
-|---|--------|----------------|--------|------|
-| 1 | **Resubmit credit notes (P4)** | 6-12 pts (T2×2, 3 tasks) | Zero code changes | Low — VAT + search fixes already in v18+ |
-| 2 | **Fix B16: employee start-date routing** | 2-4 pts | 1 line in chief.py | Low — add PLAN_PROMPT instruction |
-| 3 | **Fix B18: supplier invoice without voucherType** | 3-6 pts (bank recon) + 6 pts (standalone) | Small change in voucher.py | Medium — need to test voucherType removal |
-| 4 | **Deploy v22 + test bank recon** | Validates P1 + B18 fix | Deploy + 1 submission | Medium — untested supplier payment flow |
-| 5 | **Test ledger correction (P3)** | Up to 6 pts (T3) | 1 submission | High uncertainty — workflow never run |
-| 6 | **Test monthly closing (P2)** | 6-10 pts (T3) | 1 submission | Medium — Chief bypass working but Senior struggles with multi-voucher |
+| # | Action | Expected Points | Effort | Status |
+|---|--------|----------------|--------|--------|
+| 1 | **Resubmit project lifecycle** | up to 6 pts (T3×3) | Zero code changes | ⏳ RESUBMIT — B19+B20 fix timesheet dates + PM. v21 scored 6/7, v28 should match or beat |
+| 2 | **Resubmit credit notes (P4)** | 6-12 pts (T2×2, 3 tasks) | Zero code changes | ⏳ RESUBMIT — VAT + search fixes in v18+ |
+| 3 | **Resubmit bank reconciliation** | 3-6 pts (supplier payments) | Zero code changes | ⏳ RESUBMIT — P1 + B18 fix now in v27+ |
+| 4 | **Resubmit supplier invoices** | up to 6 pts (T3) | Zero code changes | ⏳ RESUBMIT — B18 voucherType fix in v27+ |
+| 5 | **Test monthly closing (P2)** | 6-10 pts (T3) | 1 submission | ⏳ RESUBMIT — Chief bypass + separate vouchers |
+| 6 | **Test ledger correction (P3)** | Up to 6 pts (T3) | 1 submission | ⏳ NEVER TESTED — analyze_ledger workflow built |
+| 7 | **Resubmit employee+startDate tasks** | 2-4 pts | Zero code changes | ⏳ RESUBMIT — B16 fix in v27+ |
+
+**All code fixes are deployed. The points are on the table — just need resubmissions.**
 
 **Tasks NOT worth fixing (low ROI):**
-- Receipt expenses (B10): Chief PDF timeout is structural, would need rearchitecting
-- Project lifecycle: 5-step chain, deadline pressure is the real blocker
-- Payroll (W1): Never seen again after 1 early attempt, low priority
+- Receipt expenses: Chief PDF timeout is structural
+- Payroll (W1): Never seen again after 1 early attempt
+- Forex disagio: Complex edge case, seen twice — would need dedicated workflow
 
 ## Tracking Files
 - `docs/tasks.csv` — 54+ competition prompts with scores, versions, analysis + summary section
 - `docs/add_workflows.md` — workflow backlog with priority fixes and failure analysis
 
 ## Notes
-- Competition: March 19-22, 2026 (Day 3 — LAST DAY IS TOMORROW)
+- Competition: March 19-22, 2026 (Day 3 of 4 — TOMORROW IS THE LAST DAY)
 - 56 variants per task (7 languages × 8 data sets)
 - Rate limit: 10 submissions per task per day
 - Cloud Run: project ainm26osl-722, concurrency=1

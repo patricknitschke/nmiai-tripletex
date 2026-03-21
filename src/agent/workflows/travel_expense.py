@@ -44,6 +44,21 @@ async def _get_default_payment_type_id(client: TripletexClient) -> int | None:
     return None
 
 
+async def _get_per_diem_rate_and_category(client: TripletexClient) -> tuple[int | None, int | None]:
+    """Get the first PER_DIEM rate type and rate category IDs."""
+    # Get rate category for PER_DIEM
+    cat_result = await client.get("/travelExpense/rateCategory", params={"type": "PER_DIEM", "count": "1"})
+    categories = cat_result.get("values", [])
+    category_id = categories[0]["id"] if categories else None
+
+    # Get rate for PER_DIEM
+    rate_result = await client.get("/travelExpense/rate", params={"type": "PER_DIEM", "count": "1"})
+    rates = rate_result.get("values", [])
+    rate_id = rates[0]["id"] if rates else None
+
+    return rate_id, category_id
+
+
 async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
     """Create a travel expense with optional cost lines and per diem."""
 
@@ -82,28 +97,32 @@ async def create_travel_expense(data: dict, client: TripletexClient) -> dict:
     costs = data.get("costs", data.get("costLines", []))
     per_diem = data.get("perDiem")
     payment_type_id = None
-    if costs or per_diem:
+    if costs:
         payment_type_id = await _get_default_payment_type_id(client)
 
-    # Step 4: Add per diem as a cost line (total amount)
+    # Step 4: Add per diem as proper perDiemCompensation (not a cost line)
     if per_diem:
         days = per_diem.get("days", 1)
         daily_rate = per_diem.get("dailyRate", 0)
         total = days * daily_rate
-        cost_date = data.get("date") or _date.today().isoformat()
+
+        rate_id, category_id = await _get_per_diem_rate_and_category(client)
 
         per_diem_payload = {
             "travelExpense": {"id": expense_id},
-            "date": cost_date,
-            "amountCurrencyIncVat": total,
-            "isPaidByEmployee": True,
-            "comments": f"Dagpenger ({days} dager × {daily_rate} NOK)",
+            "count": days,
+            "rate": daily_rate,
+            "amount": total,
+            "overnightAccommodation": "HOTEL",
+            "location": data.get("title", ""),
         }
-        if payment_type_id:
-            per_diem_payload["paymentType"] = {"id": payment_type_id}
+        if rate_id:
+            per_diem_payload["rateType"] = {"id": rate_id}
+        if category_id:
+            per_diem_payload["rateCategory"] = {"id": category_id}
 
-        logger.info("Adding per diem to expense %d: %d days × %s = %s", expense_id, days, daily_rate, total)
-        await client.post("/travelExpense/cost", per_diem_payload)
+        logger.info("Adding per diem compensation to expense %d: %d days × %s = %s", expense_id, days, daily_rate, total)
+        await client.post("/travelExpense/perDiemCompensation", per_diem_payload)
 
     # Step 5: Add regular cost lines
     for cost in costs:
