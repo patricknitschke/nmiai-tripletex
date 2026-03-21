@@ -135,6 +135,16 @@ async def register_time(data: dict, client: TripletexClient) -> dict:
     if not project_id:
         return {"error": "Could not find project for timesheet entry"}
 
+    # Clamp entry_date to project startDate (Tripletex rejects entries before it)
+    try:
+        proj_result = await client.get(f"/project/{project_id}")
+        proj_start = proj_result.get("value", {}).get("startDate")
+        if proj_start and entry_date < proj_start:
+            logger.warning("Entry date %s is before project start %s — clamping to start date", entry_date, proj_start)
+            entry_date = proj_start
+    except Exception:
+        pass  # non-fatal — worst case the API will reject it
+
     # Resolve activity
     activity_id = await _resolve_activity(data, client, project_id, employee_id)
     if not activity_id:

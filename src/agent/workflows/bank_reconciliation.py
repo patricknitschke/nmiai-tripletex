@@ -5,7 +5,7 @@ import re
 from datetime import date
 
 from ..tripletex import TripletexClient
-from .voucher import create_supplier_invoice
+from .voucher import create_supplier_invoice  # noqa: F401 — kept for standalone supplier invoice tasks
 
 logger = logging.getLogger("agent.workflows.bank_reconciliation")
 
@@ -13,6 +13,12 @@ logger = logging.getLogger("agent.workflows.bank_reconciliation")
 _SUPPLIER_PREFIXES = [
     r"betaling\s+leverand(?:ør|or)\s+",
     r"leverand(?:ør|or)(?:betaling)?\s+",
+    # Mixed-language combos (Norwegian "Betaling" + other language supplier keyword)
+    r"betaling\s+fornecedor\s+",
+    r"betaling\s+proveedor\s+",
+    r"betaling\s+fournisseur\s+",
+    r"betaling\s+lieferant\s+",
+    r"betaling\s+supplier\s+",
     r"zahlung\s+lieferant\s+",
     r"lieferant\s+",
     r"pago\s+proveedor\s+",
@@ -25,6 +31,92 @@ _SUPPLIER_PREFIXES = [
     r"payment\s+supplier\s+",
     r"supplier\s+",
 ]
+
+
+async def _post_supplier_bank_payment(
+    amount_incl: float, tx_date: str, supplier_name: str, description: str,
+    client: TripletexClient,
+) -> bool:
+    """Post a direct supplier bank payment as a voucher.
+
+    When no supplier invoice exists in the system, we record the bank outflow
+    directly. This avoids the systemgenererte 422 that happens when posting to
+    accounts with default VAT types.
+
+    Accounting (3 postings, no vatType to avoid system-generated conflict):
+      Debit  7300 (expense)      amount excl VAT
+      Debit  2710 (input VAT)    VAT amount
+      Credit 1920 (bank)         total amount incl VAT
+    """
+    vat_rate = 25
+    amount_excl = round(amount_incl / (1 + vat_rate / 100), 2)
+    vat_amount = round(amount_incl - amount_excl, 2)
+
+    # Resolve accounts
+    accounts_needed = {"7300": None, "2710": None, "1920": None}
+    for acct_num in accounts_needed:
+        result = await client.get("/ledger/account", params={"number": acct_num, "count": "1"})
+        values = result.get("values", [])
+        if values:
+            accounts_needed[acct_num] = values[0]["id"]
+        else:
+            logger.error("Account %s not found for supplier bank payment", acct_num)
+            return False
+
+    # Build 3 manual postings — NO vatType to avoid system-generated conflict
+    postings = [
+        {
+            "date": tx_date,
+            "description": f"{supplier_name} (expense excl VAT)",
+            "amountGross": amount_excl,
+            "account": {"id": accounts_needed["7300"]},
+        },
+        {
+            "date": tx_date,
+            "description": f"{supplier_name} (input VAT 25%)",
+            "amountGross": vat_amount,
+            "account": {"id": accounts_needed["2710"]},
+        },
+        {
+            "date": tx_date,
+            "description": f"{supplier_name} (bank payment)",
+            "amountGross": -amount_incl,
+            "account": {"id": accounts_needed["1920"]},
+        },
+    ]
+
+    voucher = {
+        "date": tx_date,
+        "description": f"Supplier payment: {supplier_name}",
+        "postings": postings,
+    }
+
+    logger.info("Posting supplier bank payment: %.2f (excl=%.2f, VAT=%.2f)", amount_incl, amount_excl, vat_amount)
+
+    # Try sendToLedger=true first, fall back to false (draft)
+    result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
+    voucher_id = result.get("value", {}).get("id")
+
+    if not voucher_id:
+        error_msg = str(result.get("validationMessages", result.get("message", "")))
+        if "systemgenererte" in error_msg.lower():
+            logger.warning("Bank payment voucher hit systemgenererte — trying draft mode")
+            result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "false"})
+            voucher_id = result.get("value", {}).get("id")
+            if voucher_id:
+                # Try to send draft to ledger
+                send_result = await client.put(f"/ledger/voucher/{voucher_id}/:sendToLedger")
+                if send_result.get("value", {}).get("id"):
+                    logger.info("Draft voucher %d sent to ledger", voucher_id)
+                else:
+                    logger.warning("Draft voucher %d created but could not send to ledger: %s", voucher_id, send_result)
+
+    if voucher_id:
+        logger.info("Supplier bank payment voucher created: id=%d", voucher_id)
+        return True
+
+    logger.error("All supplier bank payment attempts failed: %s", result)
+    return False
 
 
 def _extract_supplier_name(description: str) -> str:
@@ -257,7 +349,7 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
 
         # Type 2: Supplier payment (Betaling Leverandør/Lieferant/fournisseur)
         elif amount_out > 0 and is_supplier:
-            # Match by amount to an open supplier invoice
+            # First try: match to an existing supplier invoice and pay it
             matched_si = None
             for si in all_supplier_invoices:
                 si_id = si.get("id")
@@ -268,7 +360,6 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                     matched_si = si
                     break
 
-            # If no exact match, find any unpaid supplier invoice
             if not matched_si:
                 for si in all_supplier_invoices:
                     si_id = si.get("id")
@@ -279,38 +370,8 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                         matched_si = si
                         break
 
-            if not matched_si:
-                # No supplier invoice exists — create one from CSV data, then pay it
-                supplier_name = _extract_supplier_name(desc)
-                logger.info("No existing supplier invoice for %.2f — creating for '%s'", amount_out, supplier_name)
-                si_data = {
-                    "supplierName": supplier_name,
-                    "amountInclVat": amount_out,
-                    "expenseAccount": 7300,
-                    "vatRate": 25,
-                    "description": desc,
-                    "date": tx_date,
-                }
-                si_result = await create_supplier_invoice(si_data, client)
-                new_si_id = si_result.get("value", {}).get("id")
-                if new_si_id:
-                    logger.info("Created supplier invoice %d for '%s'", new_si_id, supplier_name)
-                    # Fetch the newly created voucher to find the supplier invoice reference
-                    # The voucher itself IS the supplier invoice in Tripletex
-                    matched_si = {"id": new_si_id, "amount": amount_out}
-                    # Also look up if a proper supplier invoice was created
-                    fresh_sis = await _get_all_supplier_invoices(client)
-                    for si in fresh_sis:
-                        if si.get("id") not in paid_supplier_ids:
-                            si_amount = si.get("amount", 0)
-                            if abs(si_amount - amount_out) < 0.01:
-                                matched_si = si
-                                break
-                else:
-                    logger.error("Failed to create supplier invoice for '%s': %s", supplier_name, si_result)
-                    results["errors"].append({"description": desc, "error": f"Failed to create supplier invoice: {si_result}"})
-
             if matched_si:
+                # Pay existing supplier invoice via addPayment
                 si_id = matched_si["id"]
                 pay_params = {
                     "invoiceId": str(si_id),
@@ -329,6 +390,23 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                 else:
                     logger.error("Failed to register supplier payment on invoice %d: %s", si_id, result)
                     results["errors"].append({"description": desc, "error": str(result)})
+            else:
+                # No existing supplier invoice — record as direct bank payment voucher.
+                # This avoids the systemgenererte 422 from create_supplier_invoice.
+                # Accounting: debit expense 7300 (net) + debit VAT 2710 + credit bank 1920
+                supplier_name = _extract_supplier_name(desc)
+                logger.info("No supplier invoice for %.2f — posting direct bank payment for '%s'", amount_out, supplier_name)
+                success = await _post_supplier_bank_payment(
+                    amount_out, tx_date, supplier_name, desc, client
+                )
+                if success:
+                    logger.info("Posted supplier bank payment %.2f for '%s'", amount_out, supplier_name)
+                    results["payments_registered"].append({
+                        "type": "supplier_direct", "description": supplier_name,
+                        "amount": amount_out, "date": tx_date
+                    })
+                else:
+                    results["errors"].append({"description": desc, "error": "Failed to post supplier bank payment voucher"})
 
         # Type 3: Bank fee / interest
         elif "bankgebyr" in desc_lower or "rente" in desc_lower or "gebyr" in desc_lower:

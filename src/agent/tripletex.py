@@ -14,6 +14,7 @@ class TripletexClient:
         self.call_count = 0
         self.error_count = 0
         self._auth = ("0", session_token)
+        self.token_dead = False  # Circuit breaker: set on expired token 403
 
     async def get(self, endpoint: str, params: dict | None = None) -> dict:
         return await self._request("GET", endpoint, params=params)
@@ -34,6 +35,11 @@ class TripletexClient:
         params: dict | None = None,
         json: dict | None = None,
     ) -> dict:
+        # Circuit breaker: don't waste time on a dead token
+        if self.token_dead:
+            logger.warning("[API SKIP] %s %s — token already expired, skipping", method, endpoint)
+            return {"error": "Token expired (circuit breaker). Stop making API calls.", "_token_dead": True}
+
         url = f"{self.base_url}{endpoint}"
         self.call_count += 1
 
@@ -55,6 +61,15 @@ class TripletexClient:
                 endpoint,
                 response.text[:500],
             )
+            # Trip circuit breaker on expired proxy token
+            if response.status_code == 403:
+                try:
+                    body = response.json()
+                    if "expired" in str(body.get("error", "")).lower() or "invalid" in str(body.get("error", "")).lower():
+                        self.token_dead = True
+                        logger.error("[CIRCUIT BREAKER] Token expired/invalid — all future API calls will be skipped")
+                except Exception:
+                    pass
         else:
             logger.info("[API %d] %s %s OK", response.status_code, method, endpoint)
 

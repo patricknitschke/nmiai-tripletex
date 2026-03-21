@@ -16,6 +16,16 @@ def _get_config() -> tuple[str, str]:
     return provider, model
 
 
+# Fallback model when primary gets 429'd
+VERTEX_FALLBACK_MODEL = os.environ.get("LLM_FALLBACK_MODEL", "gemini-2.5-flash")
+
+
+def _vertex_location_for_model(model: str) -> str:
+    """Return the correct Vertex AI location for a given model."""
+    default_location = os.environ.get("GCP_LOCATION", "europe-north1")
+    return "global" if model.startswith("gemini-3") else default_location
+
+
 # ---------------------------------------------------------------------------
 # Simple completion (used by interpreter)
 # ---------------------------------------------------------------------------
@@ -54,19 +64,18 @@ async def _vertex_complete(
     from google import genai
 
     project = os.environ.get("GCP_PROJECT_ID")
-    default_location = os.environ.get("GCP_LOCATION", "europe-north1")
-    # Gemini 3.x models require "global" location
-    location = "global" if model.startswith("gemini-3") else default_location
-    client = genai.Client(vertexai=True, project=project, location=location)
-
     parts = _to_gemini_parts(user_content)
 
-    # Retry on 429 rate limit
+    current_model = model
+    location = _vertex_location_for_model(current_model)
+    client = genai.Client(vertexai=True, project=project, location=location)
+
+    # Retry on 429 with fallback to Flash
     response = None
     for attempt in range(3):
         try:
             response = await client.aio.models.generate_content(
-                model=model,
+                model=current_model,
                 contents=parts,
                 config=genai.types.GenerateContentConfig(
                     system_instruction=system,
@@ -75,10 +84,19 @@ async def _vertex_complete(
             )
             break
         except Exception as e:
-            if "429" in str(e) and attempt < 2:
-                wait = (attempt + 1) * 3
-                logger.warning("[Complete] 429 rate limited, retrying in %ds (attempt %d/3)", wait, attempt + 1)
-                await asyncio.sleep(wait)
+            if "429" in str(e):
+                if attempt == 0 and current_model != VERTEX_FALLBACK_MODEL:
+                    # First 429: immediately fall back to Flash (no sleep)
+                    logger.warning("[Complete] 429 on %s, falling back to %s", current_model, VERTEX_FALLBACK_MODEL)
+                    current_model = VERTEX_FALLBACK_MODEL
+                    location = _vertex_location_for_model(current_model)
+                    client = genai.Client(vertexai=True, project=project, location=location)
+                elif attempt < 2:
+                    wait = (attempt + 1) * 3
+                    logger.warning("[Complete] 429 rate limited on %s, retrying in %ds (attempt %d/3)", current_model, wait, attempt + 1)
+                    await asyncio.sleep(wait)
+                else:
+                    raise
             else:
                 raise
 
@@ -179,9 +197,8 @@ async def _vertex_tool_loop(
     from google import genai
 
     project = os.environ.get("GCP_PROJECT_ID")
-    default_location = os.environ.get("GCP_LOCATION", "europe-north1")
-    # Gemini 3.x models require "global" location
-    location = "global" if model.startswith("gemini-3") else default_location
+    current_model = model
+    location = _vertex_location_for_model(current_model)
     client = genai.Client(vertexai=True, project=project, location=location)
 
     gemini_tools = _to_gemini_tools(tools)
@@ -194,14 +211,14 @@ async def _vertex_tool_loop(
             logger.warning("[Tool loop] Deadline reached, stopping early after %d iterations", iteration)
             return {"status": "completed", "iterations": iteration, "warning": "deadline"}
 
-        logger.info("[Tool loop iteration %d] Calling %s...", iteration + 1, model)
+        logger.info("[Tool loop iteration %d] Calling %s...", iteration + 1, current_model)
 
-        # Retry on 429 rate limit (up to 2 retries with backoff)
+        # Retry on 429 with fallback to Flash
         response = None
         for attempt in range(3):
             try:
                 response = await client.aio.models.generate_content(
-                    model=model,
+                    model=current_model,
                     contents=contents,
                     config=genai.types.GenerateContentConfig(
                         system_instruction=system,
@@ -211,10 +228,19 @@ async def _vertex_tool_loop(
                 )
                 break
             except Exception as e:
-                if "429" in str(e) and attempt < 2:
-                    wait = (attempt + 1) * 3
-                    logger.warning("[Tool loop] 429 rate limited, retrying in %ds (attempt %d/3)", wait, attempt + 1)
-                    await asyncio.sleep(wait)
+                if "429" in str(e):
+                    if attempt == 0 and current_model != VERTEX_FALLBACK_MODEL:
+                        # First 429: immediately fall back to Flash (no sleep)
+                        logger.warning("[Tool loop] 429 on %s, falling back to %s", current_model, VERTEX_FALLBACK_MODEL)
+                        current_model = VERTEX_FALLBACK_MODEL
+                        location = _vertex_location_for_model(current_model)
+                        client = genai.Client(vertexai=True, project=project, location=location)
+                    elif attempt < 2:
+                        wait = (attempt + 1) * 3
+                        logger.warning("[Tool loop] 429 on %s, retrying in %ds (attempt %d/3)", current_model, wait, attempt + 1)
+                        await asyncio.sleep(wait)
+                    else:
+                        raise
                 else:
                     raise
 

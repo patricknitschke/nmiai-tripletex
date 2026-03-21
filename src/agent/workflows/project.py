@@ -9,8 +9,46 @@ logger = logging.getLogger("agent.workflows.project")
 async def create_project(data: dict, client: TripletexClient) -> dict:
     """Create a project in Tripletex."""
 
-    # projectManager is required — use provided ID or look up
+    # projectManager is required — use provided ID, look up by email/name, or fallback
     manager_id = data.get("projectManagerId")
+
+    # Try to resolve by email first (most reliable)
+    if not manager_id:
+        pm_email = data.get("projectManagerEmail")
+        if pm_email:
+            emp_result = await client.get("/employee", params={"email": pm_email, "count": "1"})
+            employees = emp_result.get("values", [])
+            if employees:
+                manager_id = employees[0]["id"]
+                logger.info("Resolved project manager by email %s → id=%d", pm_email, manager_id)
+
+    # Try to resolve by first+last name fields
+    if not manager_id:
+        pm_first = data.get("projectManagerFirstName")
+        pm_last = data.get("projectManagerLastName")
+        if pm_first and pm_last:
+            emp_result = await client.get("/employee", params={"firstName": pm_first, "lastName": pm_last, "count": "10"})
+            for emp in emp_result.get("values", []):
+                if emp.get("firstName", "").lower() == pm_first.lower() and emp.get("lastName", "").lower() == pm_last.lower():
+                    manager_id = emp["id"]
+                    logger.info("Resolved project manager by name %s %s → id=%d", pm_first, pm_last, manager_id)
+                    break
+
+    # Try to resolve by full name string (LLMs often pass "projectManagerName" instead of split fields)
+    if not manager_id:
+        pm_name = data.get("projectManagerName")
+        if pm_name and " " in pm_name.strip():
+            parts = pm_name.strip().split()
+            pm_first = parts[0]
+            pm_last = " ".join(parts[1:])
+            emp_result = await client.get("/employee", params={"firstName": pm_first, "lastName": pm_last, "count": "10"})
+            for emp in emp_result.get("values", []):
+                if emp.get("firstName", "").lower() == pm_first.lower() and emp.get("lastName", "").lower() == pm_last.lower():
+                    manager_id = emp["id"]
+                    logger.info("Resolved project manager by full name '%s' → id=%d", pm_name, manager_id)
+                    break
+
+    # Fallback: grab any employee
     if not manager_id:
         emp_result = await client.get("/employee", params={"count": "10"})
         employees = emp_result.get("values", [])

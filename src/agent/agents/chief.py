@@ -99,6 +99,11 @@ Return ONLY valid JSON:
   it handles employee creation, department, employment details, salary, and working hours in ONE call.
 - If the prompt mentions a START DATE for an employee (tiltredelse/startdato/fecha de inicio/date de début/ \
   data de início/Startdatum/Anfangsdatum/start date), ALWAYS use register_employment instead of create_employee.
+- **Time registration dates:** Newly created projects default to startDate=today. Time entries CANNOT be \
+  registered before the project start date. Tell the sub-agent to register hours on today's date (or split \
+  across today and future dates if needed). NEVER tell them to use past dates for a new project.
+- **Project manager:** When the prompt specifies who the project manager is, pass their email as \
+  projectManagerEmail to the create_project workflow so the correct person is set as manager.
 """
 
 

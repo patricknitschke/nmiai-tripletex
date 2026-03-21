@@ -100,6 +100,10 @@ Always use lookup_api first to get the correct endpoint schema.
   Just calculate the amounts and call create_voucher IMMEDIATELY. Post EACH journal entry as a SEPARATE \
   create_voucher call (not all in one). Example: accrual reversal = one voucher, depreciation = one voucher, \
   salary provision = one voucher. Depreciation formula: acquisition_cost / useful_life_years / 12.
+- **Time registration dates:** Newly created projects have startDate=today. You CANNOT register hours before \
+  the project start date. Use today's date for all time entries on new projects. If you need to register many \
+  hours, put them all on today (or split across today and future dates). NEVER use past dates for new projects.
+- **Project manager:** Pass projectManagerEmail to the create_project workflow to set the correct person.
 - If a call returns a 4xx error, use lookup_api to check correct fields, then retry ONCE.
 - Do NOT guess field names. Use lookup_api or the workflow specs above.
 - Be EFFICIENT and DECISIVE. Aim to complete the task in 3-5 tool calls.
@@ -233,6 +237,16 @@ async def run_senior_accountant(
     content = build_content(prompt, files)
 
     async def execute_tool(name: str, input_data: dict) -> dict:
+        # Circuit breaker: if token is dead, tell the LLM to stop immediately
+        if client.token_dead and name != "lookup_api":
+            logger.warning("Senior → %s BLOCKED — token is dead", name)
+            return {
+                "error": "FATAL: Tripletex API token has expired. All API calls will fail. "
+                         "Stop calling tools and report that the task could not be completed "
+                         "due to an expired authentication token.",
+                "_token_dead": True,
+            }
+
         if name == "lookup_api":
             query = input_data.get("query", "")
             logger.info("Senior → lookup_api('%s')", query)

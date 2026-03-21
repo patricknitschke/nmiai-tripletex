@@ -18,4 +18,10 @@ This is a competition agent that solves Tripletex accounting tasks via an LLM + 
 - Stack: Python, FastAPI, Vertex AI (Gemini), GCP Cloud Run
 - Architecture: Chief plans (1 LLM call) → Senior executes with plan as context
 - Competition runs March 19-22, every point matters
-- See `docs/task_plan.md` for full architecture and `docs/bugs_backlog.md` for live issues
+- See `docs/task_plan.md` for full architecture
+
+
+## Actions when given a log
+1. Log it into docs/tasks.csv
+2. Analyse the agent and draft a fix, new workflow etc. into the docs/task_plan.md
+3. Implement the changes in the code.

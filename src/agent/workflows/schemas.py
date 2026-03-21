@@ -200,9 +200,17 @@ TASK_SCHEMAS: dict[str, dict] = {
     },
     "create_project": {
         "api_endpoint": "POST /project",
-        "notes": "projectManager is required but auto-resolved by the workflow. Do not guess employee IDs.",
+        "notes": (
+            "projectManager is required — pass projectManagerEmail to set the correct person. "
+            "The workflow resolves by email first, then name, then falls back to any employee. "
+            "startDate defaults to today if not specified. Do not guess employee IDs."
+        ),
         "fields": [
             {"name": "name", "type": "string", "required": True, "description": "Project name"},
+            {"name": "projectManagerEmail", "type": "string", "required": False, "description": "Email of the project manager (PREFERRED — most reliable way to set PM)"},
+            {"name": "projectManagerName", "type": "string", "required": False, "description": "Full name of PM e.g. 'Liv Haugen' (used if email not available)"},
+            {"name": "projectManagerFirstName", "type": "string", "required": False, "description": "PM first name (used if email not available)"},
+            {"name": "projectManagerLastName", "type": "string", "required": False, "description": "PM last name (used if email not available)"},
             {"name": "number", "type": "string", "required": False, "description": "Project number (auto-generated if omitted)"},
             {"name": "description", "type": "string", "required": False, "description": "Project description"},
             {"name": "startDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Start date"},
