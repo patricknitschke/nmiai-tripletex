@@ -35,10 +35,57 @@ Tracking new workflows and enhancements needed based on competition task logs.
 - **API:** POST /ledger/accountingDimensionName + POST /ledger/accountingDimensionValue
 - **Note:** Could wrap in a workflow for reliability, but raw API approach is working
 
-### W7: Bank Reconciliation
-- **Status:** NOT SEEN YET
-- **Priority:** Low — may appear in T3
-- **API:** Unknown
+### W7: Bank Reconciliation (bankavsteming)
+- **Status:** SEEN — 0/2, needs dedicated workflow
+- **Priority:** High — T3 task, complex, currently 0/2
+- **API:** GET /invoice (match by customer+amount), PUT /invoice/{id}/:payment, POST /supplierInvoice/{id}/:addPayment
+- **Example prompt:** "Avstem bankutskriften (vedlagt CSV) mot åpne fakturaer i Tripletex. Match innbetalinger til kundefakturaer og utbetalinger til leverandørfakturaer. Håndter delbetalinger korrekt."
+- **What went wrong (v13):**
+  1. All customer name searches resolved to same customer ID (API returns first partial match)
+  2. All 5 payments stacked on same invoice (-65,225 overpaid)
+  3. Invoice number from CSV (1001, 1002) doesn't match Tripletex internal numbers
+  4. Never reached supplier payments or bank fees — deadline hit at 105s
+- **What the workflow needs:**
+  1. Parse CSV: separate incoming (customer payments) vs outgoing (supplier payments) vs fees
+  2. Match invoices by: invoice number first, then by customer+amount, then by amount alone
+  3. Register each payment with correct amount (partial payments = paidAmount from CSV, not full invoice)
+  4. Handle supplier outgoing payments via POST /supplierInvoice/{id}/:addPayment
+  5. Handle bank fees via create_voucher (debit 7770 Bankgebyr, credit 1920)
+  6. Must be fast — process all rows in one workflow call, not one-by-one via LLM loop
+
+### W9: Employment Contract Registration (arbeidskontrakt)
+- **Status:** SEEN — 7/15, needs dedicated workflow
+- **Priority:** High — T3 task, 15 checks = high point value
+- **API:** POST /employee, POST /employee/employment, POST /employee/employment/details, salary endpoints
+- **Example prompt:** "Has recibido un contrato de trabajo (PDF). Crea el empleado con todos los datos: numero de identidad, departamento, codigo de ocupacion, salario, porcentaje de empleo y fecha de inicio."
+- **What went wrong (v15):**
+  1. Employee created with wrong department (existing default, not the contract's "Regnskap")
+  2. Department created AFTER employee — never re-linked
+  3. Agent spiraled 8 iterations on lookup_api searching for employment/salary endpoints, never made the call
+  4. No employment record (STYRK code, start date, percentage)
+  5. No salary record
+- **What the workflow needs:**
+  1. Create department first (if specified in contract)
+  2. Create employee linked to that department
+  3. POST /employee/employment with: startDate, occupationCode (STYRK), percentage, employeeId
+  4. POST salary endpoint with: annualSalary, paymentType
+  5. All in one workflow call from the PDF-extracted data
+
+### B9: Employee workflow ignores specified department
+- **Status:** TODO — quick fix
+- **Priority:** High — affects all employee tasks where department is specified
+- **Symptom:** Employee always linked to first `count=1` department, not the one just created or specified in the prompt
+- **Root cause:** `create_employee` workflow fetches `GET /department?count=1` and uses whatever comes back, ignoring any `departmentId` or `departmentName` passed in the data
+- **Seen in:** Carmen Pérez (Regnskap → wrong dept), Rita Almeida (Drift → wrong dept)
+- **Fix:** Check if data contains `departmentId` or `departmentName`, resolve to ID, and use that instead of the default first department
+
+### B10: Chief LLM call timeout on PDF/image inputs
+- **Status:** TODO — quick fix
+- **Priority:** Critical — causes 0/X on any PDF task where Chief takes >60s
+- **Symptom:** Chief planning call takes 146s on PDF receipt, Senior gets 0 iterations
+- **Root cause:** No timeout on the Chief `complete()` call. gemini-3.1-pro-preview is slow on multimodal
+- **Seen in:** Oppbevaringsboks receipt (151.8s total, 0 API calls)
+- **Fix:** Add timeout to Chief planning (e.g., 30s max). If Chief times out, skip plan and let Senior work from scratch with the full 100s
 
 ### B7: Proxy Token Expiry on Long Tasks
 - **Status:** INVESTIGATE

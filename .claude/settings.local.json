@@ -103,7 +103,16 @@
       "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''GET /ledger/voucherType''\\)\\)\")",
       "Bash(.venv/bin/python -c \"from src.agent.workflows import WORKFLOWS; print\\(''Workflows:'', list\\(WORKFLOWS.keys\\(\\)\\)\\)\")",
       "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''GET /project/>forTimeSheet''\\)\\)\")",
-      "Bash(.venv/bin/python -c \"from src.agent.workflows import WORKFLOWS; print\\(''Workflows \\(%d\\):'' % len\\(WORKFLOWS\\)\\); [print\\(f''  - {k}''\\) for k in WORKFLOWS]\")"
+      "Bash(.venv/bin/python -c \"from src.agent.workflows import WORKFLOWS; print\\(''Workflows \\(%d\\):'' % len\\(WORKFLOWS\\)\\); [print\\(f''  - {k}''\\) for k in WORKFLOWS]\")",
+      "Bash(.venv/bin/python -c \"from src.agent.workflows import WORKFLOWS; print\\(''OK:'', len\\(WORKFLOWS\\), ''workflows''\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''POST /employee/employment''\\)\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''POST /employee/employment/details''\\)\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''salary''\\)\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''standardTime''\\)\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''workingHours''\\)\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.api_spec import lookup; print\\(lookup\\(''POST /employee/standardTime''\\)\\)\")",
+      "Bash(.venv/bin/python -c \"from src.agent.workflows import WORKFLOWS; print\\(''OK:'', len\\(WORKFLOWS\\), ''workflows''\\); [print\\(f''  - {k}''\\) for k in WORKFLOWS]\")",
+      "Bash(.venv/bin/python -c \"from src.agent.workflows import WORKFLOWS; from src.agent.orchestrator import solve_task; print\\(''All imports OK, %d workflows'' % len\\(WORKFLOWS\\)\\)\")"
     ]
   },
   "enabledMcpjsonServers": [

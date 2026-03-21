@@ -28,6 +28,8 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "bankAccountNumber", "type": "string", "required": False, "description": "Bank account number"},
             {"name": "nationalIdentityNumber", "type": "string", "required": False, "description": "National identity number (fødselsnummer/personnummer)"},
             {"name": "address", "type": "object {addressLine1, postalCode, city}", "required": False, "description": "Home address"},
+            {"name": "departmentName", "type": "string", "required": False, "description": "Department name (e.g. 'Regnskap', 'Drift'). Workflow resolves to ID or creates if needed."},
+            {"name": "departmentId", "type": "integer", "required": False, "description": "Department ID if already known"},
             {"name": "role", "type": "string", "required": False, "description": "Role: 'administrator' if admin access is needed, otherwise omit"},
         ],
     },
@@ -271,6 +273,32 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "hours", "type": "number", "required": True, "description": "Number of hours to register"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Date for the entry (defaults to today)"},
             {"name": "chargeableHours", "type": "number", "required": False, "description": "Billable hours (defaults to same as hours)"},
+        ],
+    },
+    "register_employment": {
+        "api_endpoint": "POST /employee/employment + POST /employee/employment/details + POST /employee/standardTime",
+        "notes": (
+            "Registers a full employment contract: creates employee, employment record, employment details "
+            "(STYRK/occupation code, salary, percentage), and standard working hours. Self-contained — "
+            "handles department creation, employee creation, everything in one call. "
+            "Use this for employment contracts (arbeidskontrakt/tilbudsbrev) from PDFs."
+        ),
+        "fields": [
+            {"name": "firstName", "type": "string", "required": True, "description": "Employee first name"},
+            {"name": "lastName", "type": "string", "required": True, "description": "Employee last name"},
+            {"name": "email", "type": "string", "required": False, "description": "Employee email"},
+            {"name": "dateOfBirth", "type": "string (YYYY-MM-DD)", "required": False, "description": "Date of birth"},
+            {"name": "nationalIdentityNumber", "type": "string", "required": False, "description": "National identity number (fødselsnummer)"},
+            {"name": "bankAccountNumber", "type": "string", "required": False, "description": "Bank account number"},
+            {"name": "departmentName", "type": "string", "required": False, "description": "Department name (e.g. 'Regnskap', 'Drift')"},
+            {"name": "startDate", "type": "string (YYYY-MM-DD)", "required": True, "description": "Employment start date (tiltredelse)"},
+            {"name": "occupationCode", "type": "string", "required": False, "description": "STYRK occupation code (e.g. '2411')"},
+            {"name": "percentageOfFullTimeEquivalent", "type": "number", "required": False, "description": "Employment percentage (e.g. 100 for full-time)"},
+            {"name": "annualSalary", "type": "number", "required": False, "description": "Annual salary in NOK"},
+            {"name": "hoursPerDay", "type": "number", "required": False, "description": "Standard working hours per day (e.g. 7.5)"},
+            {"name": "employmentType", "type": "string", "required": False, "description": "ORDINARY (default), MARITIME, FREELANCE"},
+            {"name": "employmentForm", "type": "string", "required": False, "description": "PERMANENT (default), TEMPORARY"},
+            {"name": "remunerationType", "type": "string", "required": False, "description": "MONTHLY_WAGE (default), HOURLY_WAGE, FEE"},
         ],
     },
 }

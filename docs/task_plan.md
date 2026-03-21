@@ -34,7 +34,13 @@ POST /solve (100s deadline)
 - Safety net: bad Chief plans (e.g. "can't proceed") are detected and bypassed
 
 ## Current Phase
-Phase 15: T2/T3 workflows — COMPLETE (W3 + W6 built). Next: deploy + test new workflows, then iterate based on scores.
+Phase 17: Bug fixes + new workflows from competition testing. See todo list below.
+
+**v13-v15 competition results (2026-03-21):**
+- Perfect scores: customer (8/8, 7/7), invoice (4/4, 5/5), supplier (4/4), payment (2/2), project (4/4), department (3/3), product (5/5)
+- Partial: dimensions (3/6), travel expense (3/6 — token expiry), ledger analysis (2/5), employment contract (7/15, 4/10)
+- Failed: bank reconciliation (0/2), receipt expense (0/5 x2), payroll (0/0)
+- Key bugs found: B8 (plan truncation), B9 (wrong dept), B10 (Chief PDF timeout)
 
 **Session 2026-03-21 summary of ALL changes (not yet fully deployed):**
 
@@ -172,7 +178,7 @@ src/agent/agents/specialists/
   ap.py                     # Supplier invoices, vouchers (placeholder)
 ```
 
-### Phase 14: Workflow Hardening — IN PROGRESS
+### Phase 14: Workflow Hardening — COMPLETE
 Make workflows self-contained so they don't depend on Chief planning correctly.
 
 **Critical (costing points NOW):**
@@ -265,9 +271,30 @@ Track every competition prompt and result in `docs/tasks.csv` for pattern analys
 - `status` — success / partial / fail / timeout
 - `notes` — what went wrong or notable observations
 
-- [ ] **16a: Create docs/tasks.csv** with headers
-- [ ] **16b: Backfill from logs** — add all prompts from last night's testing
-- [ ] **16c: Keep logging** — add every new prompt as we test today
+- [x] **16a: Create docs/tasks.csv** with headers + version column
+- [x] **16b: Backfill from logs** — 15 pre-v13 entries + 10 v13/v15 entries
+- [x] **16c: Keep logging** — logging every new prompt as we test
+
+### Phase 17: Competition Day 3 — Bug Fixes + New Workflows
+Based on 25+ competition task logs. Prioritized by point impact.
+
+**Critical bugs (fix now):**
+- [ ] **B10: Chief timeout on PDFs** — cap Chief planning at 30s, skip to Senior if slow. Fixes 0/5 on all receipt tasks.
+- [ ] **B9: Employee wrong department** — workflow ignores departmentId/departmentName, always uses first dept. Affects all employment tasks.
+- [ ] **9v-v2: VAT prompt fix deployed** — "sin IVA" no longer → 0%. Confirmed working in v13 (Skogheim 4/4).
+
+**New workflows (high point value):**
+- [ ] **W9: Employment contract** — POST /employee/employment + salary. 15 checks per task, currently getting 4-7. Needs API research.
+- [ ] **W7: Bank reconciliation** — match CSV to invoices, register payments in bulk. 2 tasks seen, 0/2 both times.
+- [ ] **W10: Receipt expense posting** — PDF receipt → voucher with department + VAT. Blocked by B10 (Chief timeout).
+
+**Medium priority:**
+- [ ] **B8: Chief plan truncation** — bumped to 8192 tokens. Consider telling Chief "max 5 steps" for CSV tasks.
+- [ ] Re-test credit note + supplier invoice on latest deploy
+
+**Tracking:**
+- Task log: `docs/tasks.csv` (25+ entries with scores, versions, notes)
+- Workflow backlog: `docs/add_workflows.md`
 
 ## Notes
 - Competition is LIVE (March 19-22, 2026)

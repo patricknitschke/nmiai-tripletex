@@ -101,6 +101,11 @@ Return ONLY valid JSON:
   Only use vatRatePercent: 0 when the prompt explicitly says the service is TAX EXEMPT.
 - For tasks that don't match any workflow, use suggested_workflow: "fallback".
 - Most tasks need only 1 step — many workflows handle prerequisites internally.
+- **KEEP PLANS SHORT: maximum 5 steps.** For CSV/bulk tasks (bank reconciliation, batch processing), \
+  create ONE high-level step per category (e.g., "process all customer payments", "process all supplier payments"), \
+  NOT one step per row. The sub-agent will loop through the data within each step.
+- For employment contracts (arbeidskontrakt/tilbudsbrev), use the register_employment workflow — \
+  it handles employee creation, department, employment details, salary, and working hours in ONE call.
 """
 
 
@@ -111,7 +116,7 @@ async def chief_plan(prompt: str, files: list) -> tuple[str, list[dict]]:
     system = PLAN_PROMPT.format(today=today, workflow_catalog=catalog)
 
     content = build_content(prompt, files)
-    raw = await complete(system, content, max_tokens=4096)
+    raw = await complete(system, content, max_tokens=8192)
     logger.info("Chief plan raw: %s", raw)
 
     try:

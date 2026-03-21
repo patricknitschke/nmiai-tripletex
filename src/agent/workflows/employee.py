@@ -22,6 +22,23 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
 
     # Step 1: Ensure we have a department ID
     department_id = data.get("departmentId")
+
+    # Resolve department by name if specified
+    department_name = data.get("departmentName") or data.get("department")
+    if not department_id and department_name:
+        dept_result = await client.get("/department", params={"query": department_name, "count": "1"})
+        departments = dept_result.get("values", [])
+        if departments:
+            department_id = departments[0]["id"]
+            logger.info("Found department '%s' (id=%d)", department_name, department_id)
+        else:
+            # Create the department
+            logger.info("Creating department: %s", department_name)
+            dept = await client.post("/department", {"name": department_name, "departmentNumber": "1"})
+            department_id = dept.get("value", {}).get("id")
+            if department_id:
+                logger.info("Department '%s' created (id=%d)", department_name, department_id)
+
     if not department_id:
         dept_result = await client.get("/department", params={"count": "1"})
         departments = dept_result.get("values", [])

@@ -8,6 +8,7 @@ Modes:
 Set via AGENT_MODE env var. Defaults to "hybrid".
 """
 
+import asyncio
 import logging
 import os
 
@@ -43,10 +44,14 @@ async def _run_hybrid_mode(
 ) -> dict:
     """Hybrid mode: Chief plans (1 LLM call), Senior executes with plan as context."""
 
-    # Stage 1: Chief produces a strategic plan
+    # Stage 1: Chief produces a strategic plan (30s max — PDF inputs can be slow)
     logger.info("=" * 40)
     logger.info("HYBRID MODE: Chief planning...")
-    thinking, steps = await chief_plan(prompt, files)
+    try:
+        thinking, steps = await asyncio.wait_for(chief_plan(prompt, files), timeout=30.0)
+    except asyncio.TimeoutError:
+        logger.warning("Chief planning timed out after 30s — skipping to Senior")
+        return await run_senior_accountant(prompt, files, client, deadline=deadline)
 
     if not steps:
         logger.warning("Chief produced empty plan, falling back to Senior")
