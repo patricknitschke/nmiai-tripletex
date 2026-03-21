@@ -34,9 +34,12 @@ def _rank_invoice_match(data: dict, candidates: list[dict]) -> dict | None:
         if target_amount:
             outstanding = inv.get("amountOutstanding", 0)
             total = inv.get("amount", 0)
+            total_excl = inv.get("amountExcludingVat", inv.get("amountExcludingVatCurrency", 0))
             if outstanding > 0 and abs(outstanding - float(target_amount)) < 0.01:
                 s_amount = 2
             elif total > 0 and abs(total - float(target_amount)) < 0.01:
+                s_amount = 1
+            elif total_excl > 0 and abs(total_excl - float(target_amount)) < 0.01:
                 s_amount = 1
         s_desc = 0
         if description:
@@ -88,12 +91,15 @@ async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
             return invoices[0]
 
     # Fetch all non-credit-note invoices for ranked matching
+    # NOTE: Do NOT filter by customerId here — competition data sometimes has
+    # the invoice on a different customer record than the one resolved from org number.
+    # The ranker scores by org, name, amount, description so it handles disambiguation.
     search_params = {
         "invoiceDateFrom": "2000-01-01",
         "invoiceDateTo": "2099-12-31",
         "count": "1000",
     }
-    # Filter by customer if we can resolve one — avoids false matches
+    # Still resolve customer_id for later use (invoice creation fallback)
     customer_id = data.get("customerId")
     if not customer_id:
         org_number = data.get("customerOrgNumber") or data.get("organizationNumber")
@@ -103,19 +109,19 @@ async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
             if custs:
                 customer_id = custs[0]["id"]
         if not customer_id and data.get("customerName"):
-            cust_result = await client.get("/customer", params={"name": data["customerName"], "count": "5"})
+            cust_result = await client.get("/customer", params={"customerName": data["customerName"], "count": "5"})
             for c in cust_result.get("values", []):
                 if _normalize(c.get("name", "")) == _normalize(data["customerName"]):
                     customer_id = c["id"]
                     break
     if customer_id:
-        search_params["customerId"] = str(customer_id)
         data["_resolved_customerId"] = customer_id
     all_inv = await client.get("/invoice", search_params)
     candidates = [
         inv for inv in all_inv.get("values", [])
         if not inv.get("isCreditNote") and not inv.get("isCredited")
     ]
+
     if not candidates:
         return None
 

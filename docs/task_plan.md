@@ -76,7 +76,7 @@ POST /solve (100s deadline)
 |---|---|---|---|---|
 | Create invoice | T1 | `create_invoice` | 5/5 | None |
 | Invoice + payment | T2 | `create_invoice` + `register_payment` | 2/2 | ID passing between steps sometimes breaks |
-| Register payment | T2 | `register_payment` | 2/2 | B6 fixed — searches for pre-existing invoice |
+| Register payment | T2 | `register_payment` | 2/2 | **B38**: customer-filtered search can return 0 even when invoice exists (different customer record). Fixed: fallback broader search + amountExcludingVat matching |
 | Credit notes | T2 | `create_credit_note` | 1/5 | VAT interpretation + search-before-create both improved but **never retested** |
 | Supplier invoices | T3 | `create_supplier_invoice` | 5/6 | **B36 FIXED:** Was 1-posting (unbalanced). Now 2-posting: expense debit with vatType + AP 2400 credit with supplier ref. Same proven pattern as register_expense |
 | Project invoices | T2-T3 | `create_project_invoice` | 0 | **NEW v34**: Fixed-price % invoicing + time-based invoicing from timesheet hours. Needs competition test |
@@ -87,7 +87,7 @@ POST /solve (100s deadline)
 |---|---|---|---|---|
 | Create travel expense | T2 | `create_travel_expense` | 4/6 | **B21 FIXED:** Per diem was added as cost line, now uses `/travelExpense/perDiemCompensation` endpoint with rateType+rateCategory |
 | Delete travel expense | T2 | `delete_travel_expense` | — | Built, never seen in competition |
-| Receipt expenses | T3 | `register_expense` | 0/0 | **B24 FIXED:** Restructured from 2-posting amountGross (broken) to 3-posting with explicit VAT split on 2710 + no-VAT type (same as create_supplier_invoice). Needs retest |
+| Receipt expenses | T3 | `register_expense` | 0/5 | **B37 FIXED:** (1) `search_pdf` tool for targeted PDF extraction via Flash (no raw PDF in Senior context). (2) Norwegian VAT rate table in prompt (12% transport, 15% food, 25% general). (3) Multi-item split: call register_expense per line item. Needs retest |
 
 ### Projects (T2-T3)
 | Task | Tier | Workflow | Best Score | Weakness |
@@ -153,7 +153,7 @@ POST /solve (100s deadline)
 | 14 | register_time | T3 | Timesheet hours on project activity |
 | 15 | register_employment | T3 | Full contract: employee + dept + employment + salary + hours |
 | 16 | reconcile_bank_statement | T3 | CSV parser, invoice matching, bulk payments + **auto-creates supplier invoices** |
-| 17 | register_expense | T3 | Receipt → voucher with department + input VAT |
+| 17 | register_expense | T3 | Receipt → voucher with department + input VAT. Senior uses `search_pdf` tool for targeted extraction |
 | 18 | analyze_ledger | T3 | Fetch postings, detect errors (imbalance/duplicate/orphaned VAT) |
 | 19 | create_dimension | T2 | Custom accounting dimension + values in one call |
 
@@ -188,6 +188,7 @@ POST /solve (100s deadline)
 | B25 | Manual 3-posting split WITH correct vatType STILL fails systemgenererte | create_supplier_invoice 0/0, create_voucher 0/0 — posting to 2710 (VAT account) IS the system-generated posting Tripletex auto-creates. Row 0 rejected. 2400 (supplier ledger) also system-managed. | ✅ FIXED B25v2 — Supplier invoice: 1 posting with `amountGross` + real `vatType` (25% input) + `supplier`. Tripletex auto-generates 2710+2400. Expense: 2 postings (expense amountGross+vatType, bank negative). `_resolve_postings` drops LLM-generated 2710/2400 postings. |
 | B26 | B25v2 single posting still fails: guiRow 0 reserved for system-generated | Correct payload (1 posting + amountGross + vatType + supplier) rejected with same "rad 0 systemgenererte" error | ✅ FIXED — Add `"row": 1` to all user-created postings. Row 0 is reserved for Tripletex's auto-generated counterpart lines (2400 credit, MVA). |
 | B36 | create_supplier_invoice unbalanced (1 posting) + fx_payment missing customer on AR + wrong amount field | Supplier invoice 422 "sum not zero" — only sends expense debit, no AP credit. FX payment uses `amount` instead of `amountGross` + missing `customer.id` on 1500 posting. | ✅ FIXED — (1) create_supplier_invoice now 2-posting: expense debit with vatType + AP 2400 credit with supplier ref (same pattern as register_expense). (2) fx_payment uses `amountGross` + attaches customer from invoice to 1500 posting. (3) `_resolve_postings` propagates customerId/supplierId from posting data to resolved postings. |
+| B37 | Receipt expense: wrong VAT rate (25% for flights) + multi-item receipt lumped into single posting | 0/5 — Flight tickets are 12% MVA (persontransport lav sats), not 25%. Receipt also had office supplies needing separate account/rate. LLM had no VAT category guidance and no way to ask targeted questions about PDFs | ✅ FIXED — (1) `search_pdf` tool added: Senior uses Flash to ask targeted questions about PDF content instead of getting raw PDF attached. Forces structured extraction. (2) Norwegian VAT rate table added to Senior prompt (25%/15%/12%/0% with categories). (3) Multi-item receipt instructions: call register_expense once per line item. |
 
 ## Day 3 Evening — Priority Action Queue (March 21)
 

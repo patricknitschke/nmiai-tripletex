@@ -13,7 +13,8 @@ import logging
 from datetime import date
 
 from ..api_spec import lookup as api_lookup
-from ..llm import tool_use_loop
+from ..llm import complete, tool_use_loop
+from ..models import FileAttachment
 from ..tripletex import TripletexClient
 from ..utils import build_content
 from ..workflows import WORKFLOWS
@@ -91,6 +92,19 @@ Always use lookup_api first to get the correct endpoint schema.
   CRITICAL: "sin IVA"/"ohne MwSt"/"excl MVA"/"hors TVA"/"eksklusiv MVA" means the PRICE is stated \
   excluding VAT — it does NOT mean 0% VAT. The 25% rate STILL applies. \
   Even if the Chief's plan says vatRatePercent: 0, OVERRIDE it to 25 unless the prompt says EXEMPT.
+- **Norwegian VAT rates by category (IMPORTANT for receipts/expenses):** \
+  25% = general goods & services (default) \
+  15% = food/groceries (matvarer/næringsmidler) \
+  12% = passenger transport (persontransport: flights/flybillett, trains/tog, bus, taxi, ferge), hotels/overnatting, cinema/kino, amusement parks \
+  0% = tax exempt (international transport, healthcare, education, financial services) \
+  When registering expenses from receipts, use the CORRECT rate for each item category, NOT just 25% for everything.
+- **Receipts/kvitteringer with MULTIPLE items:** If a receipt has items at different VAT rates or \
+  different expense accounts, call register_expense ONCE PER LINE ITEM. For example, a receipt with \
+  a flight ticket (12% VAT, account 7140) and office supplies (25% VAT, account 6800) needs TWO \
+  separate register_expense calls. Use search_pdf to extract each line item before calling workflows.
+- **PDF files:** You do NOT see PDF contents directly. Use the search_pdf tool to extract data from \
+  attached PDFs. Ask SPECIFIC questions: items, amounts, dates, supplier name, etc. For receipts, \
+  ALWAYS ask for ALL individual line items with their amounts and categories.
 - **Employment contracts (tilbudsbrev/arbeidskontrakt/carta de oferta/Arbeitsvertrag):** Use register_employment. \
   Extract ALL fields from the PDF: firstName, lastName, dateOfBirth, nationalIdentityNumber, bankAccountNumber, \
   departmentName, startDate, occupationCode (STYRK/yrkeskode — a 4-digit code like "2411"), \
@@ -232,12 +246,67 @@ TOOLS = [
             "required": ["endpoint"],
         },
     },
+    {
+        "name": "search_pdf",
+        "description": (
+            "Extract specific information from attached PDF files (receipts, invoices, contracts). "
+            "Ask a TARGETED question and get a precise answer. "
+            "Examples: 'List all line items with amounts and categories', "
+            "'What is the receipt date and supplier name?', "
+            "'Extract employee details: name, DOB, salary, department'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Specific question about the PDF content",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+async def _search_pdf(query: str, pdf_files: list[FileAttachment]) -> dict:
+    """Use a fast model to answer specific questions about PDF files."""
+    if not pdf_files:
+        return {"error": "No PDF files attached to this task."}
+
+    # Build content: query + all PDFs
+    content = [{"type": "text", "text": query}]
+    for f in pdf_files:
+        content.append({
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": f.content_base64,
+            },
+        })
+
+    system = (
+        "You are a precise document extraction assistant. "
+        "Answer the user's question based ONLY on the attached PDF content. "
+        "Be exact with numbers, dates, and names — do not round or approximate. "
+        "If the PDF contains a table or list of items, extract ALL of them. "
+        "Return structured data when possible (JSON or clear labeled format). "
+        "If information is not found in the PDF, say so explicitly."
+    )
+
+    try:
+        result = await complete(system, content, max_tokens=2048, model="gemini-2.5-flash")
+        logger.info("search_pdf result: %s", result)
+        return {"result": result}
+    except Exception as e:
+        logger.exception("search_pdf failed")
+        return {"error": f"PDF extraction failed: {str(e)}"}
+
 
 async def run_senior_accountant(
     prompt: str,
@@ -259,7 +328,21 @@ async def run_senior_accountant(
     if plan_preamble:
         system += f"\n\n## Chief Accountant's Plan (follow this strategy)\n{plan_preamble}\n"
 
-    content = build_content(prompt, files)
+    # Separate PDF files from non-PDF files
+    # PDFs are accessible ONLY via search_pdf tool (targeted extraction)
+    # Non-PDF files (CSVs, images, text) are attached directly to context
+    pdf_files = [f for f in files if f.mime_type == "application/pdf"]
+    non_pdf_files = [f for f in files if f.mime_type != "application/pdf"]
+
+    if pdf_files:
+        logger.info("PDF files stored for search_pdf tool: %s", [f.filename for f in pdf_files])
+
+    content = build_content(prompt, non_pdf_files)
+
+    if pdf_files:
+        # Tell Senior that PDFs are available via search_pdf
+        pdf_names = ", ".join(f.filename for f in pdf_files)
+        content.append({"type": "text", "text": f"[PDF files attached: {pdf_names}. Use the search_pdf tool to extract information from them.]"})
 
     async def execute_tool(name: str, input_data: dict) -> dict:
         # Circuit breaker: if token is dead, tell the LLM to stop immediately
@@ -271,6 +354,11 @@ async def run_senior_accountant(
                          "due to an expired authentication token.",
                 "_token_dead": True,
             }
+
+        if name == "search_pdf":
+            query = input_data.get("query", "")
+            logger.info("Senior → search_pdf('%s')", query)
+            return await _search_pdf(query, pdf_files)
 
         if name == "lookup_api":
             query = input_data.get("query", "")
