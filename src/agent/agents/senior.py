@@ -98,10 +98,12 @@ Always use lookup_api first to get the correct endpoint schema.
   12% = passenger transport (persontransport: flights/flybillett, trains/tog, bus, taxi, ferge), hotels/overnatting, cinema/kino, amusement parks \
   0% = tax exempt (international transport, healthcare, education, financial services) \
   When registering expenses from receipts, use the CORRECT rate for each item category, NOT just 25% for everything.
-- **Receipts/kvitteringer with MULTIPLE items:** If a receipt has items at different VAT rates or \
-  different expense accounts, call register_expense ONCE PER LINE ITEM. For example, a receipt with \
-  a flight ticket (12% VAT, account 7140) and office supplies (25% VAT, account 6800) needs TWO \
-  separate register_expense calls. Use search_pdf to extract each line item before calling workflows.- **Overdue invoice / reminder fee / Mahngebühr tasks:** Use find_overdue_invoices FIRST to find the real \
+- **Receipts/kvitteringer — SCOPE CONTROL (CRITICAL):** If the task names a SPECIFIC item from a \
+  receipt (e.g. "the Forretningslunsj expense from this receipt"), ONLY register that ONE item. \
+  Do NOT register other items on the receipt unless explicitly asked. "Register the whole receipt" \
+  or "register all expenses" means all items. A specific item name means ONLY that item. \
+  When multiple items ARE requested at different VAT rates or expense accounts, call register_expense \
+  ONCE PER LINE ITEM. Use search_pdf to extract the specific item(s) you need.- **Overdue invoice / reminder fee / Mahngebühr tasks:** Use find_overdue_invoices FIRST to find the real \
   invoice and customer. NEVER invent customer names. The result gives you customerName, customerId, \
   invoiceId, and amountOutstanding. Pass customerName to create_voucher (REQUIRED for account 1500 \
   AR postings) and invoiceId to register_payment. The create_invoice for the reminder fee is a separate \
@@ -334,13 +336,15 @@ async def _search_pdf(query: str, pdf_files: list[FileAttachment]) -> dict:
         "You are a precise document extraction assistant. "
         "Answer the user's question based ONLY on the attached PDF content. "
         "Be exact with numbers, dates, and names — do not round or approximate. "
-        "If the PDF contains a table or list of items, extract ALL of them. "
+        "If the PDF contains a table or list of items, extract ALL of them so the caller can decide what to use. "
         "Return structured data when possible (JSON or clear labeled format). "
         "If information is not found in the PDF, say so explicitly. "
         "IMPORTANT: If the PDF contains multiple documents or unrelated data, "
         "only return information that is directly relevant to the user's query. "
         "Do NOT include data from unrelated invoices, contracts, or other documents "
-        "that happen to be in the same PDF."
+        "that happen to be in the same PDF. "
+        "For receipts: always include the supplier name, date, and each line item separately "
+        "with its description, amount (incl VAT), and VAT rate if visible."
     )
 
     try:
