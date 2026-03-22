@@ -156,7 +156,8 @@ Always use lookup_api first to get the correct endpoint schema.
   Activities are created separately via POST /project/projectActivity after project creation (ensures checkers can detect them).
 - **Expense comparison across months:** Use compare_expenses (not analyze_ledger) when comparing expenses across \
   months or finding top accounts by amount. It uses GET /ledger/posting to fetch actual expense data and \
-  aggregates by account per month — returning top_increases and top_accounts.
+    aggregates by account per month — returning ONE canonical ranking in top_increases. \
+    Use only top_increases for downstream actions and final reporting. If topN=3, your final response must list 3 lines.
 - **Cache resolved IDs:** After resolving an employee, customer, or entity by name/email, REUSE the ID for \
   subsequent calls. Do NOT call GET /employee?email=... repeatedly for the same person. Store the ID and pass it \
   directly (e.g. projectManagerId instead of projectManagerEmail on the 2nd+ call).

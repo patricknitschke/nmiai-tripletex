@@ -16,6 +16,73 @@ from .timesheet import _set_project_hourly_rate
 
 logger = logging.getLogger("agent.workflows.project_invoice")
 
+_PROJECT_UPDATE_DROP_FIELDS = {
+    "changes",
+    "url",
+    "displayName",
+    "discountPercentage",
+    "contributionMarginPercent",
+    "numberOfSubProjects",
+    "numberOfProjectParticipants",
+    "orderLines",
+    "projectHourlyRates",
+    "projectParticipants",
+    "participants",
+}
+
+
+def _requested_fixed_price(data: dict) -> float | None:
+    """Extract caller-provided fixed price from known aliases."""
+    for key in ("fixedprice", "fixedPrice", "fixedPriceAmount", "budget", "price"):
+        if key in data and data.get(key) is not None:
+            return float(data[key])
+    return None
+
+
+async def _ensure_project_fixed_price(project: dict, data: dict, client: TripletexClient) -> tuple[dict, float | None]:
+    """Ensure project fixed price is set before invoicing fixed-price percentages."""
+    requested_price = _requested_fixed_price(data)
+    if requested_price is None:
+        return project, None
+
+    current_fixed_price = float(project.get("fixedprice") or project.get("fixedPrice") or 0)
+    current_is_fixed = bool(project.get("isFixedPrice", False))
+    if current_is_fixed and abs(current_fixed_price - requested_price) < 0.005:
+        return project, requested_price
+
+    project_id = project.get("id")
+    version = project.get("version")
+    if not version and project_id:
+        refreshed = await client.get(f"/project/{project_id}")
+        refreshed_project = refreshed.get("value") or {}
+        if refreshed_project:
+            project = refreshed_project
+            version = refreshed_project.get("version")
+
+    if not project_id or version is None:
+        raise ValueError("Cannot update project fixed price: missing project id/version")
+
+    payload = {k: v for k, v in project.items() if k not in _PROJECT_UPDATE_DROP_FIELDS}
+    payload.update({
+        "id": project_id,
+        "version": version,
+        "isFixedPrice": True,
+        "fixedprice": requested_price,
+    })
+
+    logger.info(
+        "Updating project fixed price: project=%d current=%s requested=%s",
+        project_id,
+        current_fixed_price,
+        requested_price,
+    )
+    updated = await client.put(f"/project/{project_id}", payload)
+    updated_project = updated.get("value")
+    if not updated_project:
+        raise ValueError(f"Failed to update project fixed price for project {project_id}: {updated}")
+
+    return updated_project, requested_price
+
 
 async def _find_project(data: dict, client: TripletexClient) -> dict | None:
     """Find a project by ID, number, or name. Returns full project dict."""
@@ -87,10 +154,15 @@ async def create_project_invoice(data: dict, client: TripletexClient) -> dict:
     if not project:
         return {"error": f"Project not found: {data.get('projectName') or data.get('projectId')}"}
 
+    try:
+        project, requested_fixed_price = await _ensure_project_fixed_price(project, data, client)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
     project_id = project["id"]
     project_name = project.get("name", "")
     is_fixed_price = project.get("isFixedPrice", False)
-    fixed_price = project.get("fixedprice") or project.get("fixedPrice") or 0
+    fixed_price = project.get("fixedprice") or project.get("fixedPrice") or requested_fixed_price or 0
     customer = project.get("customer") or {}
     customer_id = customer.get("id") if isinstance(customer, dict) else None
 

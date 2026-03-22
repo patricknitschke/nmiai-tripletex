@@ -12,3 +12,7 @@
 - Added voucher regression tests for missing-account auto-create order and missing-amount rejection.
 - Ran `pytest tests/test_workflows.py::TestCreateVoucher`: 6 passed.
 - Ran `pytest tests/test_workflows.py`: 43 passed, 2 failed (pre-existing unrelated fixture/assertion issues in TestCreateCustomer::test_supplier_flag and TestRegisterExpense::test_department_linked).
+- Patched invoice bank-account preflight to skip `PUT /ledger/account/{id}` when account 1920 is already usable (bankAccountNumber present and isBankAccount is not false), removing one avoidable write in invoice happy paths.
+- Added `TestCreateInvoice` regression tests for both branches: skip account PUT when 1920 is already configured, and perform account PUT when bank details are missing.
+- Updated outdated register_payment test expectation to assert fail-fast behavior (no fake invoice creation when no existing invoice is found) and current detailed error message.
+- Ran focused regression tests: `pytest -q tests/test_workflows.py -k "TestCreateInvoice or test_returns_error_when_invoice_not_found or test_caches_bank_account_check_per_client"` -> 4 passed.

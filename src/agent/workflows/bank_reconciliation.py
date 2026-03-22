@@ -5,7 +5,6 @@ import re
 from datetime import date
 
 from ..tripletex import TripletexClient
-from .voucher import create_supplier_invoice
 
 logger = logging.getLogger("agent.workflows.bank_reconciliation")
 
@@ -122,6 +121,38 @@ def _normalize_date(raw: str) -> str:
     return raw
 
 
+def _parse_amount(raw: str) -> float:
+    """Parse locale-formatted amount text into float.
+
+    Supports formats like 1 282,21 / 1,282.21 / -1282.21 / (1 282,21).
+    """
+    if raw is None:
+        return 0.0
+
+    text = str(raw).strip().replace("\u00a0", "").replace(" ", "")
+    if not text:
+        return 0.0
+
+    is_negative = text.startswith("-") or (text.startswith("(") and text.endswith(")"))
+    text = text.strip("()-+")
+
+    if "," in text and "." in text:
+        # If both separators are present, treat the rightmost as decimal separator.
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "")
+            text = text.replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(",", ".")
+
+    try:
+        amount = float(text)
+    except ValueError:
+        return 0.0
+    return -amount if is_negative else amount
+
+
 # ---------------------------------------------------------------------------
 # CSV parsing
 # ---------------------------------------------------------------------------
@@ -153,16 +184,18 @@ def _normalize_rows(parsed: list[dict]) -> list[dict]:
                          "descripción", "descrição"):
                 n["description"] = val
             elif kl in ("inn", "in", "innbetaling", "credit", "kredit", "crédito"):
-                try:
-                    n["amountIn"] = float(val.replace(",", ".").replace(" ", "")) if val else 0
-                except ValueError:
-                    n["amountIn"] = 0
-            elif kl in ("ut", "out", "utbetaling", "debit", "débito"):
-                try:
-                    n["amountOut"] = float(val.replace(",", ".").replace(" ", "")) if val else 0
-                except ValueError:
-                    n["amountOut"] = 0
+                n["amountIn"] = max(_parse_amount(val), 0)
+            elif kl in ("ut", "out", "utbetaling", "debit", "débito", "debet"):
+                n["amountOut"] = abs(min(_parse_amount(val), 0)) or _parse_amount(val)
+            elif kl in ("beløp", "belop", "amount", "belopp", "importe", "valor"):
+                amt = _parse_amount(val)
+                if amt >= 0:
+                    n["amountIn"] = amt
+                else:
+                    n["amountOut"] = abs(amt)
         if n.get("description"):
+            n.setdefault("amountIn", 0)
+            n.setdefault("amountOut", 0)
             rows.append(n)
     return rows
 
@@ -295,106 +328,6 @@ async def _pay_supplier_invoice(
     })
 
 
-async def _detect_vat_rate(description: str) -> int:
-    """Detect likely VAT rate from transaction description.
-    
-    Returns 0, 12, 15, or 25 based on keywords.
-    Norwegian context: 25% general, 15% food, 12% transport, 0% exempt.
-    """
-    dl = description.lower()
-    # Transport/travel keywords → 12%
-    if any(kw in dl for kw in ("transport", "fly", "flight", "taxi", "buss", "bus", "tog", "train", "billett", "ticket", "reise")):
-        return 12
-    # Food/accommodation keywords → 15%
-    if any(kw in dl for kw in ("mat", "food", "kantine", "hotell", "hotel", "overnatting", "catering")):
-        return 15
-    # Default to 25% for general services/goods
-    return 25
-
-
-def _detect_expense_account(description: str) -> str:
-    """Detect likely expense account from transaction description.
-    
-    Returns standard Norwegian chart-of-accounts number.
-    """
-    dl = description.lower()
-    # Rent / lease → 6300
-    if any(kw in dl for kw in ("leie", "husleie", "rent", "miete", "alquiler", "loyer")):
-        return "6300"
-    # IT / software → 6540
-    if any(kw in dl for kw in ("software", "lisens", "license", "it-", "data", "hosting", "sky", "cloud")):
-        return "6540"
-    # Advertising / marketing → 7330
-    if any(kw in dl for kw in ("reklame", "annonse", "marketing", "werbung", "publicidad")):
-        return "7330"
-    # Travel → 7140
-    if any(kw in dl for kw in ("reise", "travel", "fly", "flight", "hotell", "hotel")):
-        return "7140"
-    # Goods / inventory → 4300
-    if any(kw in dl for kw in ("varer", "goods", "lager", "inventory", "innkjøp", "purchase", "material")):
-        return "4300"
-    # Default: external services → 7300
-    return "7300"
-
-
-async def _post_supplier_bank_payment(
-    amount_incl: float, tx_date: str, supplier_name: str,
-    description: str, client: TripletexClient,
-) -> bool:
-    """Post direct supplier bank payment as a voucher (fallback).
-
-    B25v2 pattern — 2 postings with vatType (Tripletex auto-generates VAT on 2710):
-      Debit  <expense> amountGross=total + vatType (e.g. 25% input)
-      Credit 1920 (bank) amountGross=-total
-
-    VAT rate and expense account are detected from description.
-    """
-    from .voucher import _resolve_vat_type
-
-    vat_rate = await _detect_vat_rate(description)
-    expense_acct = _detect_expense_account(description)
-
-    # Batch account lookup — one GET for all accounts
-    acct_numbers = ",".join(sorted({expense_acct, "1920"}))
-    result = await client.get("/ledger/account", params={"number": acct_numbers, "count": "10"})
-    accounts = {str(a.get("number")): a["id"] for a in result.get("values", []) if a.get("id")}
-
-    if expense_acct not in accounts:
-        logger.error("Account %s not found", expense_acct)
-        return False
-    if "1920" not in accounts:
-        logger.error("Account 1920 not found")
-        return False
-
-    # Resolve input VAT type for the B25v2 pattern
-    vat_type_id = await _resolve_vat_type(client, vat_rate, "input")
-
-    expense_posting = {
-        "date": tx_date, "description": f"{supplier_name} (expense)",
-        "amountGross": amount_incl, "account": {"id": accounts[expense_acct]},
-        "row": 1,
-    }
-    if vat_type_id:
-        expense_posting["vatType"] = {"id": vat_type_id}
-
-    postings = [
-        expense_posting,
-        {"date": tx_date, "description": f"{supplier_name} (bank)",
-         "amountGross": -amount_incl, "account": {"id": accounts["1920"]},
-         "row": 2},
-    ]
-    voucher = {"date": tx_date, "description": f"Supplier payment: {supplier_name}", "postings": postings}
-
-    result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
-    vid = result.get("value", {}).get("id")
-
-    if vid:
-        logger.info("Supplier bank payment voucher id=%d (acct=%s, VAT=%d%%)", vid, expense_acct, vat_rate)
-        return True
-    logger.error("Supplier bank payment failed: %s", result)
-    return False
-
-
 async def _post_fee_or_interest_voucher(
     amount: float, tx_date: str, description: str, tx_type: str,
     client: TripletexClient,
@@ -403,14 +336,14 @@ async def _post_fee_or_interest_voucher(
 
     Fee:              Debit 7770 (bankgebyr)        / Credit 1920 (bank)
     Interest income:  Debit 1920 (bank)             / Credit 8040 (renteinntekt)
-    Interest expense: Debit 8150 (rentekostnad)     / Credit 1920 (bank)
+    Interest expense: Debit 8050 (rentekostnad)     / Credit 1920 (bank)
     """
     if tx_type == "fee":
         debit_acct, credit_acct = "7770", "1920"
     elif tx_type == "interest_income":
         debit_acct, credit_acct = "1920", "8040"
     else:  # interest_expense
-        debit_acct, credit_acct = "8150", "1920"
+        debit_acct, credit_acct = "8050", "1920"
 
     # Batch account lookup — one GET for both accounts
     acct_numbers = ",".join(sorted({debit_acct, credit_acct}))
@@ -426,9 +359,11 @@ async def _post_fee_or_interest_voucher(
 
     postings = [
         {"date": tx_date, "description": description,
-         "amountGross": abs(amount), "account": {"id": accounts[debit_acct]}},
+            "amountGross": abs(amount), "amountGrossCurrency": abs(amount),
+            "account": {"id": accounts[debit_acct]}, "row": 1},
         {"date": tx_date, "description": description,
-         "amountGross": -abs(amount), "account": {"id": accounts[credit_acct]}},
+            "amountGross": -abs(amount), "amountGrossCurrency": -abs(amount),
+            "account": {"id": accounts[credit_acct]}, "row": 2},
     ]
     voucher = {"date": tx_date, "description": description, "postings": postings}
 
@@ -452,7 +387,7 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
     Deterministic, mostly LLM-free pipeline:
       1. Customer payments → multi-pass match to invoices, register payment
          (supports repeated partial payments on the same invoice)
-      2. Supplier payments → match existing supplier invoice OR create one, then pay
+            2. Supplier payments → match existing supplier invoice and register payment
       3. Bank fees/interest → create proper voucher entries
     """
     results = {"payments_registered": [], "fees_posted": [], "errors": [], "skipped": []}
@@ -536,34 +471,17 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                     logger.error("Supplier payment failed on invoice %d: %s", si_id, result)
                     results["errors"].append({"description": desc, "error": str(result)})
             else:
-                # No existing supplier invoice → create one and pay it, fall back to direct voucher
                 supplier_name = _extract_name(desc, _SUPPLIER_PREFIXES)
-                logger.info("No supplier invoice for %.2f — creating for '%s'", amount_out, supplier_name)
-
-                si_result = await create_supplier_invoice({
-                    "supplierName": supplier_name,
-                    "amountInclVat": amount_out,
-                    "date": tx_date,
-                    "description": f"Supplier invoice: {supplier_name}",
-                }, client)
-
-                si_vid = si_result.get("value", {}).get("id")
-                if si_vid:
-                    logger.info("Created supplier invoice voucher id=%d, recording payment", si_vid)
-                    results["payments_registered"].append(
-                        {"type": "supplier_created", "voucher": si_vid,
-                         "description": supplier_name, "amount": amount_out, "date": tx_date})
-                else:
-                    # Fallback: direct bank payment voucher
-                    logger.warning("Supplier invoice creation failed — falling back to direct voucher")
-                    success = await _post_supplier_bank_payment(amount_out, tx_date, supplier_name, desc, client)
-                    if success:
-                        results["payments_registered"].append(
-                            {"type": "supplier_direct", "description": supplier_name,
-                             "amount": amount_out, "date": tx_date})
-                    else:
-                        results["errors"].append({"description": desc,
-                                                  "error": "Failed to post supplier payment"})
+                logger.warning(
+                    "No matching supplier invoice for payment %.2f (%s)",
+                    amount_out,
+                    supplier_name,
+                )
+                results["skipped"].append({
+                    "description": desc,
+                    "amount": amount_out,
+                    "reason": "no matching supplier invoice",
+                })
 
         # ----- BANK FEE / INTEREST -----
         elif tx_type in ("fee", "interest_income", "interest_expense"):

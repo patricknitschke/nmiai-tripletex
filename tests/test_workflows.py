@@ -14,7 +14,7 @@ from src.agent.workflows.product import create_product
 from src.agent.workflows.project_invoice import create_project_invoice
 from src.agent.workflows.voucher import create_supplier_invoice, create_voucher, _split_into_balanced_pairs
 from src.agent.workflows.expense import register_expense
-from src.agent.workflows.ledger_analysis import verify_trial_balance
+from src.agent.workflows.ledger_analysis import compare_expenses, verify_trial_balance
 
 from .conftest import (
     make_employee, make_customer, make_invoice, make_account,
@@ -486,57 +486,51 @@ class TestRegisterPayment:
 
 
 # ============================================================
-# create_invoice — bank account write efficiency guardrails
+# create_invoice — direct invoice write path
 # ============================================================
 
 class TestCreateInvoice:
 
-    async def test_skips_account_put_when_1920_already_usable(self, mock_client):
-        mock_client.when_get("/ledger/account", {
-            "values": [{
-                **make_account(id=1, number=1920),
-                "bankAccountNumber": "12345678901",
-                "isBankAccount": True,
-            }]
-        })
+    async def test_posts_invoice_once_with_embedded_order(self, mock_client):
         mock_client.when_get("/customer", {"values": [make_customer(id=10, name="Existing AS")]})
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
-        mock_client.when_post("/order", {"value": {"id": 11}})
-        mock_client.when_put("/order/11/:invoice", {"value": make_invoice(id=22, amount=12500)})
+        mock_client.when_post("/invoice", {"value": make_invoice(id=22, amount=12500)})
         mock_client.when_get("/invoice/22", {"value": {"id": 22, "amount": 12500, "orderLines": [{}]}})
 
         await create_invoice({
             "customerName": "Existing AS",
             "orderLines": [{"description": "Consulting", "count": 1, "unitPrice": 10000}],
+            "dueDate": "2026-03-29",
             "sendToCustomer": True,
         }, mock_client)
 
         mock_client.assert_not_called("PUT", "/ledger/account/")
-        mock_client.assert_called("POST", "/order")
-        mock_client.assert_called("PUT", "/order/11/:invoice")
+        mock_client.assert_not_called("POST", "/order")
+        mock_client.assert_not_called("PUT", "/order/")
+        mock_client.assert_called("POST", "/invoice")
 
-    async def test_updates_account_when_1920_missing_bank_number(self, mock_client):
-        mock_client.when_get("/ledger/account", {
-            "values": [{
-                **make_account(id=1, number=1920),
-                "bankAccountNumber": "",
-                "isBankAccount": True,
-            }]
-        })
-        mock_client.when_put("/ledger/account/1", {"value": {"id": 1}})
+        invoice_call = mock_client.get_calls("POST", "/invoice")[0]
+        assert invoice_call["params"] == {"sendToCustomer": "true"}
+        payload = invoice_call["payload"]
+        assert payload["customer"]["id"] == 10
+        assert payload["invoiceDueDate"] == "2026-03-29"
+        assert payload["orders"][0]["orderLines"][0]["description"] == "Consulting"
+        assert payload["orders"][0]["orderLines"][0]["count"] == 1
+        assert payload["orders"][0]["orderLines"][0]["unitPriceExcludingVatCurrency"] == 10000
+
+    async def test_send_to_customer_defaults_false(self, mock_client):
         mock_client.when_get("/customer", {"values": [make_customer(id=10, name="Existing AS")]})
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
-        mock_client.when_post("/order", {"value": {"id": 12}})
-        mock_client.when_put("/order/12/:invoice", {"value": make_invoice(id=23, amount=12500)})
+        mock_client.when_post("/invoice", {"value": make_invoice(id=23, amount=12500)})
         mock_client.when_get("/invoice/23", {"value": {"id": 23, "amount": 12500, "orderLines": [{}]}})
 
         await create_invoice({
             "customerName": "Existing AS",
             "orderLines": [{"description": "Consulting", "count": 1, "unitPrice": 10000}],
-            "sendToCustomer": True,
         }, mock_client)
 
-        mock_client.assert_called("PUT", "/ledger/account/1")
+        invoice_call = mock_client.get_calls("POST", "/invoice")[0]
+        assert invoice_call["params"] == {"sendToCustomer": "false"}
 
 
 # ============================================================
@@ -644,6 +638,51 @@ class TestCreateProjectInvoice:
         assert order["deliveryDate"] == "2026-03-22"
         assert len(order["orderLines"]) == 1
         assert order["orderLines"][0]["unitPriceExcludingVatCurrency"] == 5000.0
+
+    async def test_updates_project_fixedprice_before_percent_invoice(self, mock_client):
+        project = {
+            "id": 7,
+            "version": 4,
+            "name": "Alpha",
+            "isFixedPrice": False,
+            "fixedprice": 0,
+            "projectHourlyRates": [{"id": 99}],
+            "customer": {"id": 42},
+        }
+        updated_project = {
+            "id": 7,
+            "version": 5,
+            "name": "Alpha",
+            "isFixedPrice": True,
+            "fixedprice": 318800,
+            "customer": {"id": 42},
+        }
+
+        mock_client.when_get("/project/7", {"value": project})
+        mock_client.when_put("/project/7", {"value": updated_project})
+        mock_client.when_get("/ledger/account", {"values": [{**make_account(id=1, number=1920), "bankAccountNumber": "86011117947"}]})
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+        mock_client.when_post("/invoice", {"value": {"id": 504}})
+
+        result = await create_project_invoice({
+            "projectId": 7,
+            "fixedPrice": 318800,
+            "invoicePercent": 50,
+            "invoiceDate": "2026-03-22",
+        }, mock_client)
+
+        assert result["value"]["id"] == 504
+
+        project_put = mock_client.get_calls("PUT", "/project/7")[0]
+        assert project_put["payload"]["id"] == 7
+        assert project_put["payload"]["version"] == 4
+        assert project_put["payload"]["isFixedPrice"] is True
+        assert project_put["payload"]["fixedprice"] == 318800.0
+        assert "projectHourlyRates" not in project_put["payload"]
+
+        invoice_call = mock_client.get_calls("POST", "/invoice")[0]
+        line = invoice_call["payload"]["orders"][0]["orderLines"][0]
+        assert line["unitPriceExcludingVatCurrency"] == 159400.0
 
     async def test_updates_existing_hourly_rate_instead_of_posting_duplicate(self, mock_client):
         project = {
@@ -963,6 +1002,54 @@ class TestVerifyTrialBalance:
         assert "error" not in result
         assert result["value"]["balanced"] is False
         assert result["value"]["difference"] == 125
+
+
+class TestCompareExpenses:
+
+    async def test_returns_canonical_top_increases_only(self, mock_client):
+        mock_client.when_get("/ledger/posting", {
+            "values": [
+                {"date": "2026-01-10", "amount": 100, "account": {"number": 5000, "name": "Lon"}},
+                {"date": "2026-02-10", "amount": 600, "account": {"number": 5000, "name": "Lon"}},
+                {"date": "2026-01-11", "amount": 50, "account": {"number": 6300, "name": "Leie"}},
+                {"date": "2026-02-11", "amount": 650, "account": {"number": 6300, "name": "Leie"}},
+                {"date": "2026-01-12", "amount": 200, "account": {"number": 7100, "name": "Bilgodtgjorelse"}},
+                {"date": "2026-02-12", "amount": 1200, "account": {"number": 7100, "name": "Bilgodtgjorelse"}},
+                {"date": "2026-01-13", "amount": 800, "account": {"number": 6500, "name": "Maskiner"}},
+                {"date": "2026-02-13", "amount": 700, "account": {"number": 6500, "name": "Maskiner"}},
+            ],
+            "fullResultSize": 8,
+        })
+
+        result = await compare_expenses({
+            "dateFrom": "2026-01-01",
+            "dateTo": "2026-03-01",
+            "topN": 3,
+        }, mock_client)
+
+        value = result["value"]
+        assert "top_accounts" not in value
+        assert [row["account"] for row in value["top_increases"]] == ["7100", "6300", "5000"]
+        assert all(row["max_increase"] > 0 for row in value["top_increases"])
+
+    async def test_tie_breaks_by_account_number(self, mock_client):
+        mock_client.when_get("/ledger/posting", {
+            "values": [
+                {"date": "2026-01-10", "amount": 100, "account": {"number": 4900, "name": "A"}},
+                {"date": "2026-02-10", "amount": 600, "account": {"number": 4900, "name": "A"}},
+                {"date": "2026-01-11", "amount": 100, "account": {"number": 5000, "name": "B"}},
+                {"date": "2026-02-11", "amount": 600, "account": {"number": 5000, "name": "B"}},
+            ],
+            "fullResultSize": 4,
+        })
+
+        result = await compare_expenses({
+            "dateFrom": "2026-01-01",
+            "dateTo": "2026-03-01",
+            "topN": 2,
+        }, mock_client)
+
+        assert [row["account"] for row in result["value"]["top_increases"]] == ["4900", "5000"]
 
 
 # ============================================================

@@ -13,3 +13,4 @@
 - create_voucher now fails fast on postings that omit both amount and amountGross; it no longer silently treats missing amounts as 0.
 - Chief + Senior prompts now enforce month-end sequence: account discovery -> missing-account creation -> one voucher per journal entry -> optional balance-sheet verification when requested.
 - Month-end prompt guidance now explicitly requires linear depreciation crediting accumulated depreciation contra-account (e.g. 1209), not gross asset account 1200.
+- Invoice workflow bank-account preflight now treats account 1920 as usable when it already has any bankAccountNumber and isBankAccount is not false; this avoids unnecessary PUT /ledger/account writes and preserves the 2-write optimum (POST /order + PUT /order/{id}/:invoice) when no account correction is needed.

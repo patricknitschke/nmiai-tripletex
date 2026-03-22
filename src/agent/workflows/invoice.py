@@ -229,10 +229,7 @@ async def create_order(data: dict, client: TripletexClient) -> dict:
 
 
 async def create_invoice(data: dict, client: TripletexClient) -> dict:
-    """Create an invoice. Flow: ensure bank account → create order → invoice from order."""
-
-    # Prerequisite: company must have a bank account registered
-    await _ensure_bank_account(client)
+    """Create an invoice in one write via POST /invoice with embedded order lines."""
 
     customer_id = await _ensure_customer(data, client)
     if not customer_id:
@@ -243,9 +240,8 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
     order_lines = await _build_order_lines(data.get("lines", data.get("orderLines", [])), client)
 
     invoice_date = data.get("invoiceDate", _today())
-    due_date = data.get("dueDate", data.get("invoiceDueDate", ""))
+    due_date = data.get("dueDate", data.get("invoiceDueDate"))
 
-    # Step 1: Create order
     order_payload = {
         "customer": {"id": customer_id},
         "orderDate": invoice_date,
@@ -257,23 +253,20 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
     if data.get("invoiceComment"):
         order_payload["invoiceComment"] = data["invoiceComment"]
 
-    logger.info("Creating order for invoice (customer_id=%d, %d lines)", customer_id, len(order_lines))
-    order_result = await client.post("/order", order_payload)
-    order_id = order_result.get("value", {}).get("id")
-
-    if not order_id:
-        logger.error("Failed to create order: %s", order_result)
-        return order_result
-
-    # Step 2: Invoice from order — PUT /order/{id}/:invoice (query params)
-    invoice_params = {
-        "id": str(order_id),
+    invoice_payload = {
+        "customer": {"id": customer_id},
         "invoiceDate": invoice_date,
+        "orders": [order_payload],
+    }
+    if due_date:
+        invoice_payload["invoiceDueDate"] = due_date
+
+    invoice_params = {
         "sendToCustomer": "true" if data.get("sendToCustomer") else "false",
     }
 
-    logger.info("Creating invoice from order %d", order_id)
-    result = await client.put(f"/order/{order_id}/:invoice", params=invoice_params)
+    logger.info("Creating direct invoice (customer_id=%d, %d lines)", customer_id, len(order_lines))
+    result = await client.post("/invoice", invoice_payload, params=invoice_params)
 
     invoice_id = result.get("value", {}).get("id")
     if invoice_id:

@@ -46,7 +46,7 @@ POST /solve (100s deadline)
 **Supported but struggling:**
 - Credit notes: 1/5 — VAT fix deployed (9v), never retested
 - Supplier invoices: 5/6 — **B23 fix**: vatType stripped on retry in `_post_voucher`. Previous no-VAT type was OUTPUT on INPUT accounts
-- Bank reconciliation: 1/2 (×3) — customer payments 5/5 perfect, supplier payments **fixed in v27 (P1: auto-creates supplier invoices + B18 voucherType fix + sendToLedger=false retry)** — needs retest
+- Bank reconciliation: 1/2 (×3) — customer payments 5/5 perfect; now hardened for strict reconciliation scope: match existing supplier invoices only, report unmatched supplier lines, and book interest lines with strict voucher payload fields — needs retest
 - Travel expenses: 3/6 — untested since B7 proxy fix
 - Receipt expenses: untested — built but never scored
 
@@ -118,8 +118,8 @@ POST /solve (100s deadline)
 | Task | Tier | Workflow | Best Score | Weakness |
 |---|---|---|---|---|
 | Customer payments | T3 | `reconcile_bank_statement` | 5/5 | None — perfect on every run |
-| Supplier payments | T3 | `reconcile_bank_statement` | **needs test** | **P1 FIXED:** Now auto-creates supplier invoices from CSV before matching. Extracts supplier name from description (6 languages) |
-| Bank fees/interest | T3 | `reconcile_bank_statement` | **needs test** | **B45-B51 FIXED:** Interest income (8040) vs expense (8150) now differentiated. Fee/interest auto-vouchers working. |
+| Supplier payments | T3 | `reconcile_bank_statement` | **needs test** | Matches existing supplier invoices only via `/supplierInvoice/{id}/:addPayment`; unmatched lines are reported (no supplier/customer creation fallback in reconciliation). |
+| Bank fees/interest | T3 | `reconcile_bank_statement` | **needs test** | Interest/fee lines are booked via `POST /ledger/voucher` with strict postings (`row>=1`, account on each line, `amountGross`=`amountGrossCurrency`). Interest expense now uses 8050→1920. |
 
 ## Tier Coverage Summary
 
@@ -133,7 +133,7 @@ POST /solve (100s deadline)
 
 | # | Fix | Tasks | Expected Points | Status | Notes |
 |---|-----|-------|----------------|--------|-------|
-| P1 | Bank recon: create supplier invoices from CSV before matching | 3 | 3-6 pts | ✅ **IMPLEMENTED** | Auto-creates supplier invoices from CSV description + amount, then registers payment |
+| P1 | Bank recon: strict existing-invoice matching + strict interest vouchers | 3 | 3-6 pts | ✅ **IMPLEMENTED** | No entity creation fallback; unmatched supplier lines are surfaced, and interest vouchers are posted with row/account/amountCurrency constraints |
 | P2 | Monthly/yearly closing: skip Chief | 2 | 6-10 pts | ✅ **IMPLEMENTED** | Keyword detection bypasses Chief for closing/depreciation/accrual tasks |
 | P3 | Ledger error correction: analyze_ledger workflow | 1 | up to 6 pts (T3) | ✅ **IMPLEMENTED** | Fetches postings, detects imbalances/duplicates/orphaned VAT → Senior fixes via create_voucher |
 | P4 | Credit note retest | 3 | 6-12 pts (T2×2) | ⏳ Resubmit | Hardened: removed fuzzy match + create-then-credit fallback, added creditNoteEmail/sendType, fixed id-in-params bug |
@@ -157,7 +157,7 @@ POST /solve (100s deadline)
 | 13 | create_voucher | T3 | Manual journal entries + dimension support |
 | 14 | register_time | T3 | Timesheet hours on project activity |
 | 15 | register_employment | T3 | Full contract: employee + dept + employment + salary + hours |
-| 16 | reconcile_bank_statement | T3 | CSV parser, invoice matching, bulk payments + **auto-creates supplier invoices** |
+| 16 | reconcile_bank_statement | T3 | CSV parser, invoice matching, supplier/customer payment registration on existing invoices, and strict fee/interest voucher booking |
 | 17 | register_expense | T3 | Receipt → voucher with department + input VAT. Senior uses `search_pdf` tool for targeted extraction |
 | 18 | analyze_ledger | T3 | Fetch postings, detect errors (imbalance/duplicate/orphaned VAT) |
 | 19 | create_dimension | T2 | Custom accounting dimension + values in one call |
@@ -207,7 +207,7 @@ POST /solve (100s deadline)
 | B57 | Depreciation truncated to integers + wrong balanceSheet dateTo → cascading tax error | Year-end closing: (1) Chief computed 280000/9=31111 and 484650/8=60581 (integer truncation, should be 31111.11 and 60581.25). Expense on 6010 understated by 0.36, cascading to wrong 22% tax provision (~0.08 off). (2) Senior queried /balanceSheet with dateTo=2025-12-31 first (EXCLUSIVE — missed all Dec 31 postings!), burned 6 iterations discovering this, retried with 2026-01-01. 14 iterations, 22 API calls for what should be ~7. | ✅ FIXED — Chief+Senior prompts: (1) depreciation MUST use round(cost/years, 2) with explicit examples. (2) /balanceSheet dateTo is EXCLUSIVE — year-end 2025 uses dateTo=2026-01-01, NOT 2025-12-31. |
 | B55 | compare_expenses uses /resultbudget/company (budget data → 0 entries), sorts by total not increase | Expense analysis task 2/5 — (1) /resultbudget/company returns budgets not actuals. (2) After fallback to /ledger/posting, used count=1000 + dateTo=2026-02-28 (exclusive → missed Feb 28). (3) Sorted by absolute total not month-over-month increase → wrong top 3 accounts. | ✅ FIXED — compare_expenses rewritten: (1) uses GET /ledger/posting with accountNumberFrom/To (server-side filter). (2) dateTo defaults to 2026-03-01 (exclusive, includes all of Feb). (3) fields=account(*) (avoids B34 unexpanded accounts). (4) Aggregates by account+month, computes increase=month2-month1, sorts by increase. (5) Explicit month1/month2 params for Chief. (6) Chief prompt updated: 2-step plan (compare_expenses→create_project×N with isInternal+embedded activities). |
 | B44 | STYRK occupation code lookup too narrow (count=1) | Employment 9/10 — STYRK 3323 returned 0 results with count=1 (API uses substring match, ordering may not surface exact match). Field omitted silently instead of retried. | ✅ FIXED — `_resolve_occupation_code()` helper: count=25, prefers exact/prefix match, falls back to shorter prefix search (first 2 digits, count=50). Same fix in payroll.py. |
-| B45 | Interest expense posted with wrong accounts (income accounts used) | Bank recon interest expenses Debit 1920/Credit 8040 (income). Should be Debit 8150 (expense)/Credit 1920 (bank). `_classify` returned generic "interest" without direction. | ✅ FIXED — `_classify` now returns `interest_income` or `interest_expense` based on amount direction. `_post_fee_or_interest_voucher` routes to correct accounts (8150 for expense, 8040 for income). |
+| B45 | Interest expense posted with wrong accounts (income accounts used) | Bank recon interest expenses Debit 1920/Credit 8040 (income). Should be Debit expense/Credit 1920 (bank). `_classify` returned generic "interest" without direction. | ✅ FIXED — `_classify` now returns `interest_income` or `interest_expense` based on amount direction. `_post_fee_or_interest_voucher` routes to correct accounts (8050 for expense, 8040 for income). |
 | B46 | Redundant path param in query params | `_pay_customer_invoice` sent `id` as query param (already in URL path). `_pay_supplier_invoice` sent `invoiceId`. Not harmful but misleading. | ✅ FIXED — Removed redundant query params. |
 | B47 | Hardcoded 25% VAT in supplier fallback voucher | `_post_supplier_bank_payment` always assumed 25% VAT. Many transactions have 0/12/15% VAT → wrong accounting entries. | ✅ FIXED — `_detect_vat_rate()` infers VAT from description keywords (transport=12%, food=15%, default=25%). |
 | B48 | Hardcoded expense account 7300 for all supplier payments | Every fallback voucher debited 7300 (external services). Supplier expenses span 4000-7000 series. | ✅ FIXED — `_detect_expense_account()` infers account from description (rent→6300, IT→6540, travel→7140, goods→4300, default→7300). |
@@ -222,6 +222,9 @@ POST /solve (100s deadline)
 | B61 | Month-end closing drift: guessed accounts/amounts + wrong balanceSheet semantics | 2/5 — prepaid periodization debited guessed account 6300 (no 1710 history lookup), created 1209 as extra write, payroll accrual 45000 inferred after /salary/transaction 500, and saldobalanse check used /balanceSheet with dateFrom (period view) instead of snapshot semantics. | ✅ FIXED — Chief/Senior month-end guardrails tightened: (1) derive prepaid counterpart from 1700-1799 posting history, never guess, (2) if payroll source fails and amount is missing, report missing source rather than infer from 5000 turnover, (3) saldobalanse verification uses /balanceSheet with dateTo-only snapshot, (4) prefer existing accumulated-depreciation accounts before creating new ones. |
 | B62 | Month-end write inefficiency: missing batch account creation | 5 writes vs optimal 4 on closing task — two separate `POST /ledger/account` calls created 6030 + 1209 one-by-one before vouchers. | ✅ FIXED — `create_voucher` now batch-creates missing accounts with `POST /ledger/account/list` when multiple accounts are missing (falls back to single `POST /ledger/account` for one account). Chief/Senior prompts updated to enforce `/ledger/account/list` for multi-account gaps. |
 | B63 | Month-end orchestration regression: wrong account selection + silent account creation + fabricated payroll amount + unvalidated trial balance | 0/8 — entry used wrong periodization account despite prompt, auto-created missing accounts (1209) instead of failing configuration, inferred payroll accrual after salary endpoint 500, and called /balanceSheet without parsing/validating totals. | ✅ FIXED — v37 hardening: (1) `create_voucher` and `create_supplier_invoice` now fail fast on missing account numbers (no auto-create fallback), (2) account lookup is strict exact-match only, (3) new `verify_trial_balance` workflow parses /balanceSheet into debit/credit totals + balanced flag, (4) Chief/Senior month-end guidance now explicitly requires `verify_trial_balance` and missing-data reporting instead of guessed amounts. |
+| B64 | Invoice write inefficiency: legacy order-first invoice path | Invoice flow used 3 writes (PUT account + POST /order + PUT /order/:invoice) when the API supports one direct invoice write with embedded order lines. | ✅ FIXED — `create_invoice` now uses a single `POST /invoice` call with embedded `orders/orderLines`, and no longer performs bank-account patching in this workflow. Net result: 1 write (optimal), 0 unnecessary account/order writes. Added regression tests asserting direct `POST /invoice` behavior and default `sendToCustomer=false`. |
+| B65 | compare_expenses returned conflicting rank fields + incomplete downstream reporting | Expense-analysis task failed despite successful writes: workflow returned both `top_increases` and `top_accounts` with different ordering, so downstream selection/reporting was non-deterministic; final answer also risked missing ranked lines. | ✅ FIXED — compare_expenses now returns one canonical ranking only (`top_increases`), filtered to positive increases, deterministic tie-break by account number, and prompts/schema updated to force using this field exclusively and reporting all requested lines. Added regression tests for canonical ordering + tie-break behavior. |
+| B66 | Bank reconciliation fallback behavior + strict voucher payload mismatch | Reconciliation run attempted supplier auto-create/direct voucher fallback and produced avoidable 422s. Interest voucher payloads also missed strict posting requirements (`row>=1`, `amountGrossCurrency`, explicit account on every posting). | ✅ FIXED — `reconcile_bank_statement` now never creates suppliers/customers/supplier vouchers as fallback, only matches existing supplier invoices and reports unmatched lines. Interest/fee vouchers now include `row` + `account` + `amountGross` + `amountGrossCurrency` on all postings. CSV normalization also supports signed single-amount columns (`Beløp/Amount`) and locale-formatted numbers. |
 
 ## Day 3 Evening — Priority Action Queue (March 21)
 
@@ -231,7 +234,7 @@ POST /solve (100s deadline)
 |---|--------|----------------|--------|--------|
 | 1 | **Resubmit project lifecycle** | up to 6 pts (T3×3) | Zero code changes | ⏳ RESUBMIT — B19+B20 fix timesheet dates + PM. v21 scored 6/7, v28 should match or beat |
 | 2 | **Resubmit credit notes (P4)** | 6-12 pts (T2×2, 3 tasks) | Zero code changes | ⏳ RESUBMIT — VAT + search fixes in v18+ |
-| 3 | **Resubmit bank reconciliation** | 3-6 pts (supplier payments) | Zero code changes | ⏳ RESUBMIT — P1 + B18 fix now in v27+ |
+| 3 | **Resubmit bank reconciliation** | 3-6 pts (supplier + interest scope) | Zero code changes | ⏳ RESUBMIT — B66 strict matching + strict interest voucher payload fix |
 | 4 | **Resubmit supplier invoices** | up to 6 pts (T3) | Zero code changes | ⏳ RESUBMIT — B18 voucherType fix in v27+ |
 | 5 | **Test monthly closing (P2)** | 6-10 pts (T3) | 1 submission | ⏳ RESUBMIT — Chief bypass + separate vouchers |
 | 6 | **Resubmit ledger correction (P3)** | Up to 6 pts (T3) | 1 submission | ⏳ TESTED 3/4 — B34+B35 fixes deployed. Account extraction + 2710 handling + VAT correction prompt. Expect 4/4 |

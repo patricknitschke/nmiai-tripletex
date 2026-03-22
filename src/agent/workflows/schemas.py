@@ -101,12 +101,12 @@ TASK_SCHEMAS: dict[str, dict] = {
         ],
     },
     "create_invoice": {
-        "api_endpoint": "POST /order → PUT /order/{id}/:invoice",
+        "api_endpoint": "POST /invoice (with embedded orders/orderLines)",
         "notes": (
-            "Invoice creation is a 2-step process: create order, then invoice from order. "
+            "Invoice creation is optimized to a single write call using POST /invoice. "
             "Customer is resolved by the workflow. If the prompt says to create a customer, "
             "include customer details in a 'customer' object. "
-            "The workflow auto-registers a bank account if missing."
+            "Order and orderLines are embedded directly in the invoice payload."
         ),
         "fields": [
             {"name": "customerName", "type": "string", "required": False, "description": "Customer name (looked up or created)"},
@@ -438,7 +438,7 @@ TASK_SCHEMAS: dict[str, dict] = {
             "Compares ACTUAL expenses across months using posted ledger data. Fetches all postings in "
             "the given date range and expense account range, aggregates by account per month, and "
             "automatically computes the largest month-over-month increase for each account. "
-            "Returns top_increases (sorted by largest increase) and top_accounts (by absolute total). "
+            "Returns a single canonical ranking in top_increases, sorted by largest increase with deterministic tie-breaks. "
             "The workflow auto-detects which months are present — no need to specify month numbers. "
             "CRITICAL: dateTo is EXCLUSIVE — to include all of month N, use the 1st of month N+1. "
             "Example: Jan+Feb → dateFrom=2026-01-01 dateTo=2026-03-01. Mar+Apr → dateFrom=2026-03-01 dateTo=2026-05-01. "
@@ -489,12 +489,12 @@ TASK_SCHEMAS: dict[str, dict] = {
         ],
     },
     "create_project_invoice": {
-        "api_endpoint": "POST /order + PUT /order/{id}/:invoice",
+        "api_endpoint": "POST /invoice (with embedded orders/orderLines)",
         "notes": (
             "Invoices a project's work to the linked customer. Two modes: "
             "(1) Fixed-price: invoice a percentage or specific amount of the project's fixed price. "
             "(2) Time-based: invoice from registered timesheet hours at their rates. "
-            "Self-contained: finds the project, gathers hours, builds invoice lines, creates order, invoices. "
+            "Self-contained: finds the project, gathers hours, builds invoice lines, and posts one invoice. "
             "Use this for project invoicing tasks (prosjektfaktura/factura de proyecto/fatura de projeto/Projektrechnung). "
             "The project must already exist with a linked customer."
         ),

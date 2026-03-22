@@ -165,8 +165,9 @@ Return ONLY valid JSON:
      This uses GET /ledger/posting (actual data) — NOT /resultbudget/company (budget data, returns 0). \
   (2) create_project × N (one per top account) with isInternal=true and the account name as project name. \
      Each project should include an activity via activityName or projectActivities field (created separately after project). \
-     Tell the sub-agent: "Use the account names from compare_expenses top_increases as project names. \
-     Set isInternal=true. Add one activity per project (use the account name as the activity name too)." \
+      Tell the sub-agent: "Use the account names from compare_expenses top_increases as project names. \
+      Set isInternal=true. Add one activity per project (use the account name as the activity name too). \
+      Treat top_increases as the ONLY ranking source and report all N ranked lines in the final answer." \
   Do NOT use analyze_ledger for expense comparison — that's for error detection. \
   Do NOT use /resultbudget/company — it returns budget data which may be empty.
 """

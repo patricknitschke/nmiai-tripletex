@@ -285,8 +285,14 @@ async def compare_expenses(data: dict, client: TripletexClient) -> dict:
     logger.info("Fetched %d expense postings", len(all_postings))
 
     if not all_postings:
-        return {"value": {"postings_count": 0, "monthly_totals": {}, "top_increases": [], "top_accounts": [],
-                          "summary": "No expense postings found in date range"}}
+        return {
+            "value": {
+                "postings_count": 0,
+                "monthly_totals": {},
+                "top_increases": [],
+                "summary": "No expense postings found in date range",
+            }
+        }
 
     # Aggregate amount per account per month
     account_months: dict[str, dict] = {}
@@ -322,24 +328,26 @@ async def compare_expenses(data: dict, client: TripletexClient) -> dict:
                 max_increase = delta
                 increase_from = m1
                 increase_to = m2
-        increases.append({
-            "account": acct_num,
-            "name": info["name"],
-            "max_increase": round(max_increase, 2),
-            "increase_from_month": increase_from,
-            "increase_to_month": increase_to,
-            "months": {k: round(v, 2) for k, v in sorted(info["months"].items())},
-        })
+        if max_increase > 0:
+            increases.append({
+                "account": acct_num,
+                "name": info["name"],
+                "max_increase": round(max_increase, 2),
+                "increase_from_month": increase_from,
+                "increase_to_month": increase_to,
+                "months": {k: round(v, 2) for k, v in sorted(info["months"].items())},
+            })
 
-    # Sort by largest increase first
-    increases.sort(key=lambda x: x["max_increase"], reverse=True)
+    # Canonical ranking: highest increase first, deterministic tie-breaker on account number.
+    def _rank_key(item: dict) -> tuple[float, int]:
+        try:
+            account_num = int(item.get("account"))
+        except (TypeError, ValueError):
+            account_num = 10**9
+        return (-item["max_increase"], account_num)
+
+    increases.sort(key=_rank_key)
     top_increases = increases[:top_n]
-
-    # Also provide top accounts by absolute total (for general analysis)
-    all_accounts_sorted = sorted(
-        increases, key=lambda x: abs(sum(x["months"].values())), reverse=True
-    )
-    top_accounts = all_accounts_sorted[:top_n]
 
     # Monthly grand totals
     monthly_totals: dict[int, float] = {}
@@ -361,11 +369,10 @@ async def compare_expenses(data: dict, client: TripletexClient) -> dict:
             "months_found": all_months_present,
             "monthly_totals": monthly_totals,
             "top_increases": top_increases,
-            "top_accounts": top_accounts,
             "summary": (
                 f"Analyzed {len(all_postings)} actual expense postings across {len(account_months)} accounts "
                 f"({date_from} to {date_to} excl). Months found: {months_str}. "
-                f"Top {len(top_increases)} accounts by largest month-over-month increase. "
+                f"Top {len(top_increases)} accounts by largest month-over-month increase (positive deltas only). "
                 f"Use top_increases[].name for project/account names."
             ),
         }
