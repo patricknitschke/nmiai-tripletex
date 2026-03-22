@@ -68,10 +68,6 @@ async def create_customer(data: dict, client: TripletexClient) -> dict:
         payload["organizationNumber"] = data["organizationNumber"]
     if data.get("isSupplier") is not None:
         payload["isSupplier"] = data["isSupplier"]
-        if data["isSupplier"] and data.get("isCustomer") is None:
-            payload["isCustomer"] = False
-    if data.get("isCustomer") is not None:
-        payload["isCustomer"] = data["isCustomer"]
     if data.get("isPrivateIndividual") is not None:
         payload["isPrivateIndividual"] = data["isPrivateIndividual"]
     if data.get("language"):

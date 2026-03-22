@@ -127,7 +127,9 @@
       "Bash(python -m pytest tests/test_workflows.py -v --tb=short)",
       "Bash(chmod +x /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex/scripts/replay.py)",
       "Bash(python scripts/replay.py --dry-run)",
-      "Bash(python scripts/replay.py --filter payroll --dry-run)"
+      "Bash(python scripts/replay.py --filter payroll --dry-run)",
+      "Bash(find /Users/patricknitschke/Documents/ProjectCode/NMiAI/nmiai-tripletex -name openapi* -o -name swagger* -o -name *.json -maxdepth 2)",
+      "Bash(python:*)"
     ]
   },
   "enabledMcpjsonServers": [

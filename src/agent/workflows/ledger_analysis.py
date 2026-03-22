@@ -418,7 +418,7 @@ async def verify_trial_balance(data: dict, client: TripletexClient) -> dict:
         tomorrow = date.today() + timedelta(days=1)
         date_to = tomorrow.isoformat()
 
-    params = {"dateTo": date_to}
+    params = {"dateFrom": "2000-01-01", "dateTo": date_to}
     if data.get("dateFrom"):
         logger.warning("verify_trial_balance ignores dateFrom to enforce snapshot semantics")
 

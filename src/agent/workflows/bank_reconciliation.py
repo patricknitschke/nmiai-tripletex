@@ -5,6 +5,7 @@ import re
 from datetime import date
 
 from ..tripletex import TripletexClient
+from .voucher import _resolve_no_vat_type
 
 logger = logging.getLogger("agent.workflows.bank_reconciliation")
 
@@ -396,13 +397,19 @@ async def _post_fee_or_interest_voucher(
 
     accounts = account_cache
 
+    # Resolve no-VAT type to explicitly mark postings as VAT-exempt
+    no_vat_id = await _resolve_no_vat_type(client)
+    vat_ref = {"id": no_vat_id} if no_vat_id and no_vat_id > 0 else None
+
     postings = [
         {"date": tx_date, "description": description,
             "amountGross": abs(amount), "amountGrossCurrency": abs(amount),
-            "account": {"id": accounts[debit_acct]}, "row": 1},
+            "account": {"id": accounts[debit_acct]}, "row": 1,
+            **({"vatType": vat_ref} if vat_ref else {})},
         {"date": tx_date, "description": description,
             "amountGross": -abs(amount), "amountGrossCurrency": -abs(amount),
-            "account": {"id": accounts[credit_acct]}, "row": 2},
+            "account": {"id": accounts[credit_acct]}, "row": 2,
+            **({"vatType": vat_ref} if vat_ref else {})},
     ]
     voucher = {"date": tx_date, "description": description, "postings": postings}
 

@@ -174,8 +174,8 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
         logger.error("Payment registration failed: %s", payment_result)
         return {"error": f"Payment failed: {payment_result}", "invoice_id": invoice_id}
 
-    verify_after = await client.get(f"/invoice/{invoice_id}")
-    invoice_after = verify_after.get("value", {})
+    # Use the PUT response directly — it already returns the updated invoice
+    invoice_after = payment_result.get("value", {})
     outstanding_after = round(float(invoice_after.get("amountOutstanding", 0) or 0), 2)
     outstanding_currency_after = round(float(invoice_after.get("amountCurrencyOutstanding", 0) or 0), 2)
 
