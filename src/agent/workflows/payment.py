@@ -53,7 +53,7 @@ def _rank_invoice_match(data: dict, candidates: list[dict]) -> dict | None:
     org_number = data.get("customerOrgNumber") or data.get("organizationNumber") or ""
     customer_name = _normalize(data.get("customerName", ""))
     description = _normalize(data.get("description", ""))
-    target_amount = data.get("amountExclVat") or data.get("amount") or data.get("paidAmount")
+    target_amount = data.get("amountExclVat") or data.get("amount") or data.get("paidAmount") or data.get("invoiceAmountForeign") or data.get("amountForeign")
 
     def _score(inv: dict) -> tuple:
         cust = inv.get("customer") or {}
@@ -155,8 +155,12 @@ async def _list_invoice_candidates(client: TripletexClient, search_params: dict)
     return invoices
 
 
-async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
-    """Find an invoice by ID, number, or ranked multi-pass search. Returns full invoice dict."""
+async def _find_invoice(data: dict, client: TripletexClient, allow_broad_fallback: bool = True) -> dict | None:
+    """Find an invoice by ID, number, or ranked search.
+
+    If allow_broad_fallback is False, only invoiceId/invoiceNumber or
+    customer-scoped search is allowed.
+    """
     invoice_id = data.get("invoiceId")
     if invoice_id:
         result = await client.get(f"/invoice/{invoice_id}")
@@ -190,7 +194,14 @@ async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
             if scoped_match:
                 logger.info("Found invoice %d using customer-scoped search", scoped_match["id"])
                 return scoped_match
+        if not allow_broad_fallback:
+            logger.info("No ranked invoice match in strict customer-scoped search")
+            return None
         logger.info("No ranked invoice match in customer-scoped search, falling back to broad search")
+
+    if not allow_broad_fallback:
+        logger.info("Strict invoice search enabled and no direct/customer-scoped match found")
+        return None
 
     candidates = await _list_invoice_candidates(client, search_params)
 
@@ -201,7 +212,7 @@ async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
 
 
 async def register_payment(data: dict, client: TripletexClient) -> dict:
-    """Register a payment on an invoice. Self-contained: searches for existing invoice, creates if needed."""
+    """Register a payment on an existing invoice."""
 
     invoice = await _find_invoice(data, client)
 

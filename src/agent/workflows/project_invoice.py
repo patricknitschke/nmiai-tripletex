@@ -7,6 +7,7 @@ Supports two modes:
 Flow: find project → gather billable data → create invoice with embedded order.
 """
 
+import asyncio
 import logging
 from datetime import date, timedelta
 
@@ -233,9 +234,10 @@ async def create_project_invoice(data: dict, client: TripletexClient) -> dict:
             else:
                 return {"error": f"No timesheet entries or amount for project '{project_name}'"}
         else:
-            # Group hours by activity
+            # Group hours by activity, collecting entry-level rates (B71)
             activity_hours: dict[int, float] = {}
             activity_chargeable: dict[int, float] = {}
+            activity_entry_rate: dict[int, float] = {}
             for entry in entries:
                 act = entry.get("activity") or {}
                 act_id = act.get("id", 0) if isinstance(act, dict) else 0
@@ -243,13 +245,18 @@ async def create_project_invoice(data: dict, client: TripletexClient) -> dict:
                 chargeable = entry.get("chargeableHours", hours)
                 activity_hours[act_id] = activity_hours.get(act_id, 0) + hours
                 activity_chargeable[act_id] = activity_chargeable.get(act_id, 0) + chargeable
+                # Capture hourlyRate from entries (set by Tripletex from project rate config)
+                entry_rate = entry.get("hourlyRate")
+                if entry_rate and act_id not in activity_entry_rate:
+                    activity_entry_rate[act_id] = float(entry_rate)
 
-            # Resolve activity names
-            activities = await _get_project_activities(project_id, client)
+            # Resolve activity names + VAT in parallel (independent reads)
+            activities_task = _get_project_activities(project_id, client)
+            vat_task = _lookup_vat_type_by_rate(25, client)
+            activities, vat_id = await asyncio.gather(activities_task, vat_task)
 
             # Build one invoice line per activity
             override_rate = data.get("hourlyRate") or data.get("rate")
-            vat_id = await _lookup_vat_type_by_rate(25, client)
 
             for act_id, total_hours in activity_hours.items():
                 chargeable = activity_chargeable.get(act_id, total_hours)
@@ -258,11 +265,11 @@ async def create_project_invoice(data: dict, client: TripletexClient) -> dict:
 
                 act_info = activities.get(act_id, {})
                 act_name = act_info.get("name", f"Aktivitet {act_id}")
-                rate = float(override_rate) if override_rate else act_info.get("rate", data.get("hourlyRate", 0))
-
-                if not rate:
-                    # Try to extract rate from the data
-                    rate = data.get("hourlyRate") or data.get("rate") or 0
+                # Rate priority: explicit override > entry-level rate from Tripletex > 0
+                if override_rate:
+                    rate = float(override_rate)
+                else:
+                    rate = activity_entry_rate.get(act_id, 0)
 
                 if rate:
                     ol = {

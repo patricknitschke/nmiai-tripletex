@@ -173,12 +173,14 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
                 })
             seen[key] = p
 
-    # Check 3: VAT postings without corresponding expense (orphaned VAT)
+    # Check 3: VAT postings without corresponding expense OR revenue (orphaned VAT)
+    # B70 fix: include revenue accounts (3xxx) as valid VAT partners — sales vouchers
+    # (1500/3000/2700) are normal and should NOT be flagged.
     for v_id, v_postings in vouchers.items():
         accounts = [p.get("account", {}).get("number") if isinstance(p.get("account"), dict) else None for p in v_postings]
         has_vat = any(a and str(a).startswith("27") for a in accounts)
-        has_expense = any(a and str(a).startswith(("4", "5", "6", "7")) for a in accounts)
-        if has_vat and not has_expense:
+        has_expense_or_revenue = any(a and str(a).startswith(("3", "4", "5", "6", "7")) for a in accounts)
+        if has_vat and not has_expense_or_revenue:
             errors_found.append({
                 "type": "orphaned_vat",
                 "voucherId": v_id,
@@ -190,8 +192,31 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
                     }
                     for p in v_postings
                 ],
-                "suggestion": f"Voucher {v_id} has VAT posting but no expense account. Possible missing expense line.",
+                "suggestion": f"Voucher {v_id} has VAT posting but no expense/revenue account. Possible missing line.",
             })
+
+    # Check 4: Expense postings WITHOUT expected VAT companion (missing VAT)
+    # B70: Detects expense accounts (4xxx-7xxx) that were booked without a corresponding
+    # 2710 input-VAT posting in the same voucher. These are the actual "missing VAT" errors.
+    for v_id, v_postings in vouchers.items():
+        accounts = [p.get("account", {}).get("number") if isinstance(p.get("account"), dict) else None for p in v_postings]
+        account_strs = [str(a) for a in accounts if a]
+        expense_postings = [p for p, a in zip(v_postings, accounts) if a and str(a).startswith(("4", "5", "6", "7"))]
+        has_input_vat = any(a.startswith("271") for a in account_strs)  # 2710 = input VAT
+        if expense_postings and not has_input_vat:
+            for ep in expense_postings:
+                acct = ep.get("account", {}).get("number") if isinstance(ep.get("account"), dict) else "?"
+                amt = ep.get("amount", 0)
+                if amt > 0:  # Only flag debit expense postings (actual costs)
+                    errors_found.append({
+                        "type": "missing_expense_vat",
+                        "voucherId": v_id,
+                        "account": acct,
+                        "amount": amt,
+                        "date": ep.get("date", ""),
+                        "description": ep.get("description", ""),
+                        "suggestion": f"Expense {acct} ({amt}) has no input VAT posting (2710). May need VAT correction: Dr 2710 +{round(amt * 0.25, 2)}, Cr 1920 -{round(amt * 0.25, 2)}.",
+                    })
 
     # Build summaries only for flagged vouchers — avoids bloating response on busy ledgers
     flagged_voucher_ids = {e["voucherId"] for e in errors_found}

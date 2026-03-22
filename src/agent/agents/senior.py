@@ -109,6 +109,11 @@ Always use lookup_api first to get the correct endpoint schema.
   revenue accounts while the voucher uses specific GL accounts (e.g. 1500/3400).- **PDF files:** You do NOT see PDF contents directly. Use the search_pdf tool to extract data from \
   attached PDFs. Ask SPECIFIC questions: items, amounts, dates, supplier name, etc. For receipts, \
   ALWAYS ask for ALL individual line items with their amounts and categories.
+- **CRITICAL — Ignore unrelated PDF data:** search_pdf may return data from unrelated documents \
+  (e.g. a supplier invoice for a different company). ONLY act on data that matches the task's \
+  customer/supplier/entity. If the PDF contains an invoice for "Eichenhof GmbH" but the task is about \
+  "Skogheim AS", IGNORE the Eichenhof data completely. NEVER create suppliers, vouchers, or any \
+  accounting entries for entities not mentioned in the task prompt.
 - **Employment contracts (tilbudsbrev/arbeidskontrakt/carta de oferta/Arbeitsvertrag):** Use register_employment. \
   Extract ALL fields from the PDF: firstName, lastName, dateOfBirth, nationalIdentityNumber, bankAccountNumber, \
   departmentName, startDate, occupationCode (STYRK/yrkeskode — a 4-digit code like "2411"), \
@@ -331,7 +336,11 @@ async def _search_pdf(query: str, pdf_files: list[FileAttachment]) -> dict:
         "Be exact with numbers, dates, and names — do not round or approximate. "
         "If the PDF contains a table or list of items, extract ALL of them. "
         "Return structured data when possible (JSON or clear labeled format). "
-        "If information is not found in the PDF, say so explicitly."
+        "If information is not found in the PDF, say so explicitly. "
+        "IMPORTANT: If the PDF contains multiple documents or unrelated data, "
+        "only return information that is directly relevant to the user's query. "
+        "Do NOT include data from unrelated invoices, contracts, or other documents "
+        "that happen to be in the same PDF."
     )
 
     try:

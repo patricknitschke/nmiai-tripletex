@@ -105,6 +105,7 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
             logger.info("Resolved STYRK %s → id=%d (code=%s)", occupation_code, matched_oc["id"], matched_oc.get("code"))
         else:
             logger.warning("STYRK code %s not found in Tripletex after broad search, skipping", occupation_code)
+            errors.append(f"STYRK/yrkeskode '{occupation_code}' not found — employment created without occupation code (may affect a-melding reporting)")
 
     percentage = data.get("percentageOfFullTimeEquivalent") or data.get("percentage")
     if percentage is not None:

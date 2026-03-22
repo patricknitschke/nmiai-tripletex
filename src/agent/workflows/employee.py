@@ -1,4 +1,5 @@
 import logging
+import unicodedata
 
 from ..tripletex import TripletexClient
 from .department import resolve_or_create_department
@@ -120,9 +121,17 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
     # Email is required by Tripletex — generate fallback if not provided
     email = data.get("email")
     if not email:
-        first = data.get("firstName", "user").lower().replace(" ", ".")
-        last = data.get("lastName", "unknown").lower().replace(" ", ".")
-        email = f"{first}.{last}@example.org"
+        def _ascii_ify(s: str) -> str:
+            """Transliterate non-ASCII chars to closest ASCII (e.g. á→a, ø→o, ü→u)."""
+            # Pre-map chars that NFKD doesn't decompose (Nordic, German, etc.)
+            _MAP = {"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ð": "d", "Ð": "D",
+                    "þ": "th", "Þ": "Th", "ß": "ss", "đ": "d", "Đ": "D", "ł": "l", "Ł": "L"}
+            s = "".join(_MAP.get(c, c) for c in s)
+            nfkd = unicodedata.normalize("NFKD", s)
+            return "".join(c for c in nfkd if unicodedata.category(c) != "Mn").encode("ascii", "ignore").decode("ascii")
+        first = _ascii_ify(data.get("firstName", "user")).lower().replace(" ", ".")
+        last = _ascii_ify(data.get("lastName", "unknown")).lower().replace(" ", ".")
+        email = f"{first}.{last}@example.com"
         logger.info("No email provided, using fallback: %s", email)
     payload["email"] = email
     if data.get("phoneNumberMobile") or data.get("phoneNumber"):

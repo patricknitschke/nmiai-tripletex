@@ -1,5 +1,5 @@
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from ..tripletex import TripletexClient
 from .customer import create_customer
@@ -240,7 +240,7 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
     order_lines = await _build_order_lines(data.get("lines", data.get("orderLines", [])), client)
 
     invoice_date = data.get("invoiceDate", _today())
-    due_date = data.get("dueDate", data.get("invoiceDueDate"))
+    due_date = data.get("dueDate") or data.get("invoiceDueDate") or (date.fromisoformat(invoice_date) + timedelta(days=14)).isoformat()
 
     order_payload = {
         "customer": {"id": customer_id},
@@ -258,8 +258,7 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
         "invoiceDate": invoice_date,
         "orders": [order_payload],
     }
-    if due_date:
-        invoice_payload["invoiceDueDate"] = due_date
+    invoice_payload["invoiceDueDate"] = due_date
 
     invoice_params = {
         "sendToCustomer": "true" if data.get("sendToCustomer") else "false",

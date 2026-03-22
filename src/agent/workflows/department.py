@@ -7,18 +7,17 @@ logger = logging.getLogger("agent.workflows.department")
 
 async def _next_dept_number(client: TripletexClient) -> str:
     """Return the next free department number (max existing + 1)."""
-    result = await client.get("/department", params={"count": "1000", "fields": "id,departmentNumber"})
+    result = await client.get("/department", params={
+        "count": "1", "sorting": "departmentNumber", "order": "desc",
+        "fields": "id,departmentNumber",
+    })
     existing = result.get("values", [])
     if not existing:
         return "1"
-    max_num = 0
-    for dept in existing:
-        try:
-            num = int(dept.get("departmentNumber", 0))
-            if num > max_num:
-                max_num = num
-        except (ValueError, TypeError):
-            pass
+    try:
+        max_num = int(existing[0].get("departmentNumber", 0))
+    except (ValueError, TypeError):
+        max_num = 0
     return str(max_num + 1)
 
 

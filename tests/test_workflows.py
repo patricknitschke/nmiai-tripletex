@@ -9,6 +9,7 @@ import pytest
 from src.agent.workflows.payroll import register_payroll
 from src.agent.workflows.customer import create_customer
 from src.agent.workflows.payment import register_payment
+from src.agent.workflows.fx_payment import register_fx_payment
 from src.agent.workflows.invoice import create_invoice
 from src.agent.workflows.product import create_product
 from src.agent.workflows.project_invoice import create_project_invoice
@@ -483,6 +484,127 @@ class TestRegisterPayment:
             "Check customer org number, invoice description, or provide invoiceId/invoiceNumber."
         )
         mock_client.assert_not_called("POST", "/order")
+
+
+# ============================================================
+# register_fx_payment — strict lookup + deterministic FX logic
+# ============================================================
+
+class TestRegisterFxPayment:
+
+    async def test_returns_error_when_fx_invoice_not_found(self, mock_client):
+        customer = make_customer(id=10, name="Solmar SL", org_number="939332235")
+        mock_client.when_get("/customer", {"values": [customer]})
+        mock_client.when_get("/invoice", {"values": []})
+
+        result = await register_fx_payment({
+            "customerName": "Solmar SL",
+            "customerOrgNumber": "939332235",
+            "paymentAmountForeign": 100,
+            "paymentRate": 11.0,
+            "currency": "EUR",
+        }, mock_client)
+
+        assert result["error"] == (
+            "Could not find existing invoice for FX payment. "
+            "Provide invoiceId/invoiceNumber or customerOrgNumber/customerName."
+        )
+        mock_client.assert_not_called("POST", "/order")
+        mock_client.assert_not_called("POST", "/ledger/voucher")
+
+    async def test_uses_invoice_basis_and_skips_manual_voucher_when_settled(self, mock_client):
+        pre_payment_invoice = make_invoice(
+            id=88,
+            amount=1000,
+            amount_outstanding=1000,
+            amountCurrency=100,
+            amountCurrencyOutstanding=100,
+            currencyCode="EUR",
+            currency={"code": "EUR"},
+            customer={"id": 10, "name": "Solmar SL", "organizationNumber": "939332235"},
+        )
+        post_payment_invoice = {
+            **pre_payment_invoice,
+            "amountOutstanding": 0,
+            "amountCurrencyOutstanding": 0,
+        }
+
+        mock_client._responses[("GET", "/invoice/88")] = [
+            {"value": pre_payment_invoice},
+            {"value": post_payment_invoice},
+        ]
+        mock_client.when_get("/currency", {"values": [{"id": 2, "code": "EUR"}]})
+        mock_client.when_get("/invoice/paymentType", {"values": [make_payment_type(id=1)]})
+        mock_client.when_put("/invoice/88/:payment", {"value": {"id": 88}})
+
+        result = await register_fx_payment({
+            "invoiceId": 88,
+            "paymentAmountForeign": 100,
+            "paymentRate": 11.0,
+            "currency": "EUR",
+            "paymentDate": "2026-03-22",
+        }, mock_client)
+
+        assert result["invoice_nok_basis"] == 1000.0
+        assert result["payment_nok"] == 1100.0
+        assert result["fx_difference"] == 100.0
+        assert result["message"] == "Payment registered; invoice settled with no residual outstanding. Skipped manual FX voucher."
+
+        put_call = mock_client.get_calls("PUT", "/invoice/88/:payment")[0]
+        assert put_call["params"]["paidAmount"] == "1100.0"
+        assert put_call["params"]["paidAmountCurrency"] == "100.0"
+        mock_client.assert_not_called("POST", "/ledger/voucher")
+
+    async def test_force_manual_voucher_posts_agio_with_correct_sign(self, mock_client):
+        pre_payment_invoice = make_invoice(
+            id=91,
+            amount=1000,
+            amount_outstanding=1000,
+            amountCurrency=100,
+            amountCurrencyOutstanding=100,
+            currencyCode="EUR",
+            currency={"code": "EUR"},
+            customer={"id": 10, "name": "Solmar SL", "organizationNumber": "939332235"},
+        )
+        post_payment_invoice = {
+            **pre_payment_invoice,
+            "amountOutstanding": 0,
+            "amountCurrencyOutstanding": 0,
+        }
+
+        mock_client._responses[("GET", "/invoice/91")] = [
+            {"value": pre_payment_invoice},
+            {"value": post_payment_invoice},
+        ]
+        mock_client.when_get("/currency", {"values": [{"id": 2, "code": "EUR"}]})
+        mock_client.when_get("/invoice/paymentType", {"values": [make_payment_type(id=1)]})
+        mock_client.when_put("/invoice/91/:payment", {"value": {"id": 91}})
+        mock_client.when_get("/ledger/account", {
+            "values": [
+                {"id": 1, "number": 1500, "vatType": None, "vatLocked": False, "ledgerType": "CUSTOMER"},
+                {"id": 2, "number": 8160, "vatType": None, "vatLocked": False, "ledgerType": "GENERAL"},
+            ]
+        })
+        mock_client.when_get("/ledger/vatType", {"values": [{"id": 5, "name": "Ingen avgift", "percentage": 0}]})
+        mock_client.when_post("/ledger/voucher", {"value": {"id": 501}})
+
+        result = await register_fx_payment({
+            "invoiceId": 91,
+            "paymentAmountForeign": 100,
+            "paymentRate": 11.0,
+            "currency": "EUR",
+            "paymentDate": "2026-03-22",
+            "forceManualFxVoucher": True,
+        }, mock_client)
+
+        assert result["voucher_id"] == 501
+        voucher_call = mock_client.get_calls("POST", "/ledger/voucher")[0]
+        voucher_postings = voucher_call["payload"]["postings"]
+
+        ar_line = next(p for p in voucher_postings if p["account"]["id"] == 1)
+        gain_line = next(p for p in voucher_postings if p["account"]["id"] == 2)
+        assert ar_line["amountGross"] == 100.0
+        assert gain_line["amountGross"] == -100.0
 
 
 # ============================================================
