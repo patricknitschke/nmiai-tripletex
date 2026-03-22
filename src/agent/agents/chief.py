@@ -109,12 +109,14 @@ Return ONLY valid JSON:
 - Most tasks need only 1 step — many workflows handle prerequisites internally.
 - **Overdue invoice / reminder fee tasks** require this EXACT order: \
   (1) find_overdue_invoices to discover the real invoice + customer, \
-  (2) create_voucher for the GL entry (pass customerName from step 1 — required for AR account 1500), \
-  (3) create_invoice for the reminder fee to the same customer (do NOT skip — it's a separate document), \
-  (4) register_payment partial payment on the overdue invoice (pass invoiceId from step 1). \
-  The invoice in step 3 and the voucher in step 2 are NOT double-booking — the invoice is a billing \
-  document sent to the customer, and the voucher records the fee on specific GL accounts (1500/3400) \
-  which may differ from the invoice's auto-generated postings.
+  (2) send_reminder with includeCharge=true (pass invoiceId from step 1). This uses \
+  PUT /invoice/:createReminder which handles the reminder charge, accounting entries \
+  (debit 1500/credit 3400), and sending to the customer ALL in one call. \
+  (3) register_payment partial payment on the overdue invoice (pass invoiceId from step 1). \
+  DO NOT use create_voucher + create_invoice for reminders — that's 3 extra writes and risks \
+  double-posting. The send_reminder workflow is purpose-built for this. \
+  Norwegian reminder fees (purregebyr) are VAT-exempt (0%). If the task specifies a charge \
+  amount (e.g., 65 NOK), pass it as chargeAmount.
 - **KEEP PLANS SHORT: maximum 5 steps.** For CSV/bulk tasks (bank reconciliation, batch processing), \
   create ONE high-level step per category (e.g., "process all customer payments", "process all supplier payments"), \
   NOT one step per row. The sub-agent will loop through the data within each step.

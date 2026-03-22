@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 
 from ..tripletex import TripletexClient
 from .voucher import create_voucher
@@ -142,7 +143,7 @@ async def create_dimension_voucher(data: dict, client: TripletexClient) -> dict:
     account = data.get("voucherAccount") or data.get("account")
     amount = data.get("voucherAmount") or data.get("amount")
     desc = data.get("voucherDescription") or data.get("description") or dim_result.get("dimensionName", "Dimension voucher")
-    voucher_date = data.get("voucherDate") or data.get("date")
+    voucher_date = data.get("voucherDate") or data.get("date") or date.today().isoformat()
     balancing = data.get("balancingAccount", 2400)
 
     if not account or not amount:

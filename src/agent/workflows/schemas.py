@@ -517,13 +517,34 @@ TASK_SCHEMAS: dict[str, dict] = {
             "Returns the most overdue invoice with customer details. Use this as the FIRST step "
             "for any task mentioning overdue invoices, reminder fees (Mahngebühr), or late fees. "
             "The result includes customerName, customerId, invoiceId, and amountOutstanding — "
-            "pass these to subsequent create_voucher, create_invoice, and register_payment steps. "
+            "pass these to subsequent send_reminder and register_payment steps. "
             "NEVER fabricate a customer name — this workflow finds the REAL customer."
         ),
         "fields": [
             {"name": "customerName", "type": "string", "required": False, "description": "Optional: filter by customer name"},
             {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Optional: filter by organization number"},
             {"name": "minAmount", "type": "number", "required": False, "description": "Optional: minimum outstanding amount"},
+        ],
+    },
+    "send_reminder": {
+        "api_endpoint": "PUT /invoice/{id}/:createReminder",
+        "notes": (
+            "Sends a reminder for an overdue invoice. Uses PUT /invoice/{id}/:createReminder with "
+            "includeCharge=true to handle EVERYTHING in ONE write call: creates reminder, adds the "
+            "charge (purregebyr), auto-generates accounting entries (debit 1500 AR, credit 3400 "
+            "reminder income), and sends to the customer. MUCH more efficient than the old manual "
+            "voucher + order + invoice path (1 write vs 3 writes). Norwegian reminder fees are "
+            "VAT-exempt (0%). Falls back to POST /invoice with 0% VAT if createReminder fails. "
+            "ALWAYS use after find_overdue_invoices — pass invoiceId from that result."
+        ),
+        "fields": [
+            {"name": "invoiceId", "type": "integer", "required": True, "description": "The overdue invoice ID (from find_overdue_invoices)"},
+            {"name": "reminderType", "type": "string", "required": False, "description": "SOFT_REMINDER | REMINDER | NOTICE_OF_DEBT_COLLECTION (default: REMINDER)"},
+            {"name": "includeCharge", "type": "boolean", "required": False, "description": "Include reminder fee / purregebyr (default: true)"},
+            {"name": "includeInterest", "type": "boolean", "required": False, "description": "Include interest on overdue amount (default: false)"},
+            {"name": "chargeAmount", "type": "number", "required": False, "description": "Reminder fee amount in NOK (default: 65, standard Norwegian purregebyr)"},
+            {"name": "customerId", "type": "integer", "required": False, "description": "Customer ID (for fallback invoice path)"},
+            {"name": "customerName", "type": "string", "required": False, "description": "Customer name (for fallback invoice path)"},
         ],
     },
 }

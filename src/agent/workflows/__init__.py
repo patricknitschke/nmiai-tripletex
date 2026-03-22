@@ -19,7 +19,7 @@ from .ledger_analysis import analyze_ledger, compare_expenses
 from .payroll import register_payroll
 from .fx_payment import register_fx_payment
 from .project_invoice import create_project_invoice
-from .overdue import find_overdue_invoices
+from .overdue import find_overdue_invoices, send_reminder
 
 # Map task_type → workflow function
 # Each workflow takes (data: dict, client: TripletexClient) and returns a result dict
@@ -53,4 +53,5 @@ WORKFLOWS: dict[str, callable] = {
     "create_project_invoice": create_project_invoice,
     "create_dimension_voucher": create_dimension_voucher,
     "find_overdue_invoices": find_overdue_invoices,
+    "send_reminder": send_reminder,
 }

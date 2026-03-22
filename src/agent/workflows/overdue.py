@@ -1,8 +1,12 @@
-"""Find overdue invoices in Tripletex.
+"""Find overdue invoices and send reminders in Tripletex.
 
 B41 fix: Provides a search-first approach for tasks that reference existing overdue
 invoices. Instead of fabricating customers, the agent finds real overdue invoices
 and returns customer info for downstream workflows (voucher, invoice, payment).
+
+B52 fix: send_reminder uses PUT /invoice/{id}/:createReminder with includeCharge=true
+to handle reminder creation + charge + accounting entry + sending in ONE write call.
+Replaces the old 3-write path (manual voucher + order + invoice).
 """
 
 import logging
@@ -135,4 +139,151 @@ async def find_overdue_invoices(data: dict, client: TripletexClient) -> dict:
         "invoiceId": best.get("id"),
         "amountOutstanding": best_outstanding,
         "invoiceDueDate": best.get("invoiceDueDate"),
+    }
+
+
+async def send_reminder(data: dict, client: TripletexClient) -> dict:
+    """Send a reminder for an overdue invoice using PUT /invoice/{id}/:createReminder.
+
+    This is the optimal path for reminder fee tasks — handles everything in ONE write call:
+    - Creates the reminder document
+    - Adds the charge (includeCharge=true) — standard Norwegian purregebyr
+    - Auto-generates the accounting entries (debit 1500-AR, credit 3400-reminder income)
+    - Sends to the customer via email
+
+    Input data fields:
+    - invoiceId: required — the overdue invoice ID (from find_overdue_invoices)
+    - reminderType: SOFT_REMINDER | REMINDER | NOTICE_OF_DEBT_COLLECTION (default: REMINDER)
+    - includeCharge: whether to include the reminder fee (default: true)
+    - includeInterest: whether to include interest (default: false)
+    - date: reminder date (default: today)
+    - dispatchType: EMAIL | OWN_PRINTER | etc (default: EMAIL)
+
+    Fallback: if :createReminder fails, falls back to POST /invoice with 0% VAT for the
+    reminder fee (reminder fees / purregebyr are VAT-exempt in Norway).
+    """
+    invoice_id = data.get("invoiceId")
+    if not invoice_id:
+        return {"error": "invoiceId is required — run find_overdue_invoices first"}
+
+    today = date.today().isoformat()
+    reminder_type = data.get("reminderType", "REMINDER")
+    include_charge = data.get("includeCharge", True)
+    include_interest = data.get("includeInterest", False)
+    reminder_date = data.get("date", today)
+    dispatch_type = data.get("dispatchType", "EMAIL")
+
+    # Primary path: PUT /invoice/{id}/:createReminder
+    params = {
+        "type": reminder_type,
+        "date": reminder_date,
+        "includeCharge": str(include_charge).lower(),
+        "includeInterest": str(include_interest).lower(),
+        "dispatchType": dispatch_type,
+    }
+
+    logger.info(
+        "Creating reminder for invoice %d (type=%s, includeCharge=%s, dispatch=%s)",
+        invoice_id, reminder_type, include_charge, dispatch_type,
+    )
+
+    result = await client.put(f"/invoice/{invoice_id}/:createReminder", params=params)
+
+    if not result.get("error"):
+        reminder_id = result.get("value")
+        logger.info("Reminder created successfully (reminder_id=%s) for invoice %d", reminder_id, invoice_id)
+        return {
+            "value": result.get("value"),
+            "reminderId": reminder_id,
+            "invoiceId": invoice_id,
+            "method": "createReminder",
+            "includeCharge": include_charge,
+        }
+
+    # Fallback: create a separate invoice for the reminder fee with 0% VAT
+    logger.warning(
+        "createReminder failed for invoice %d: %s — falling back to manual invoice",
+        invoice_id, result.get("error"),
+    )
+    return await _fallback_reminder_invoice(data, client)
+
+
+async def _fallback_reminder_invoice(data: dict, client: TripletexClient) -> dict:
+    """Fallback: create a direct invoice for the reminder fee with 0% VAT.
+
+    Norwegian reminder fees (purregebyr) are VAT-exempt = 0%.
+    Uses POST /invoice directly to avoid the order→invoice 2-call path.
+    The invoice auto-generates AR posting (debit 1500), so no separate voucher needed.
+    """
+    from .invoice import _ensure_bank_account, _ensure_customer, _lookup_vat_type_by_rate
+
+    customer_id = data.get("customerId")
+    charge_amount = data.get("chargeAmount", 65)  # Standard Norwegian reminder fee
+
+    if not customer_id:
+        customer_id = await _ensure_customer(data, client)
+    if not customer_id:
+        return {"error": "No customer for fallback reminder invoice"}
+
+    await _ensure_bank_account(client)
+
+    # Resolve 0% VAT type (reminder fees are VAT-exempt)
+    vat_id = await _lookup_vat_type_by_rate(0, client)
+
+    today = date.today().isoformat()
+
+    # Build order line for the reminder fee
+    order_line = {
+        "description": "Purregebyr / Reminder fee",
+        "count": 1,
+        "unitPriceExcludingVatCurrency": charge_amount,
+    }
+    if vat_id:
+        order_line["vatType"] = {"id": vat_id}
+
+    # Try POST /invoice with embedded order (direct invoice creation)
+    invoice_payload = {
+        "invoiceDate": today,
+        "invoiceDueDate": data.get("dueDate", today),
+        "order": {
+            "customer": {"id": customer_id},
+            "orderDate": today,
+            "deliveryDate": today,
+            "orderLines": [order_line],
+        },
+    }
+
+    logger.info("Fallback: creating direct reminder invoice for customer %s, amount=%s, VAT=0%%", customer_id, charge_amount)
+    result = await client.post("/invoice", invoice_payload, params={"sendToCustomer": "true"})
+
+    if result.get("error"):
+        # Last resort: use order→invoice path
+        logger.warning("POST /invoice failed: %s — trying order→invoice path", result.get("error"))
+        order_result = await client.post("/order", {
+            "customer": {"id": customer_id},
+            "orderDate": today,
+            "deliveryDate": today,
+            "orderLines": [order_line],
+        })
+        order_id = order_result.get("value", {}).get("id")
+        if not order_id:
+            return {"error": f"Failed to create fallback order: {order_result}"}
+
+        result = await client.put(
+            f"/order/{order_id}/:invoice",
+            params={"invoiceDate": today, "sendToCustomer": "true"},
+        )
+
+    invoice_id = result.get("value", {}).get("id")
+    if invoice_id:
+        logger.info("Fallback reminder invoice created: id=%d", invoice_id)
+    else:
+        logger.error("Fallback reminder invoice failed: %s", result)
+
+    return {
+        "value": result.get("value", {}),
+        "invoiceId": invoice_id,
+        "method": "fallback_invoice",
+        "vatRate": 0,
+        "chargeAmount": charge_amount,
     }

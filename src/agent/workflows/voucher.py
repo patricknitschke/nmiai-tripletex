@@ -87,29 +87,29 @@ async def _resolve_supplier(data: dict, client: TripletexClient) -> int | None:
     org_number = data.get("supplierOrgNumber") or data.get("organizationNumber")
     supplier_name = data.get("supplierName")
 
-    # Search by org number first
+    # Search by org number first — use /supplier endpoint (not /customer)
     if org_number:
-        result = await client.get("/customer", params={"organizationNumber": org_number, "count": "1"})
+        result = await client.get("/supplier", params={"organizationNumber": org_number, "count": "1"})
         values = result.get("values", [])
         if values:
             existing = values[0]
             logger.info("Found existing supplier by org number %s (id=%d)", org_number, existing["id"])
             return existing["id"]
 
-    # Search by name (server filtered), then keep strict exact match locally.
+    # Search by name via /supplier, then keep strict exact match locally.
     if supplier_name:
-        result = await client.get("/customer", params={"customerName": supplier_name, "count": "20"})
-        for cust in result.get("values", []):
-            if cust.get("name", "").lower() == supplier_name.lower():
-                logger.info("Found existing supplier by name %s (id=%d)", supplier_name, cust["id"])
-                return cust["id"]
+        result = await client.get("/supplier", params={"name": supplier_name, "count": "20"})
+        for sup in result.get("values", []):
+            if sup.get("name", "").lower() == supplier_name.lower():
+                logger.info("Found existing supplier by name %s (id=%d)", supplier_name, sup["id"])
+                return sup["id"]
 
-    # Create supplier if we have enough info
+    # Create supplier if we have enough info — use POST /supplier
     if supplier_name:
-        payload = {"name": supplier_name, "isCustomer": False, "isSupplier": True}
+        payload = {"name": supplier_name}
         if org_number:
             payload["organizationNumber"] = org_number
-        result = await client.post("/customer", payload)
+        result = await client.post("/supplier", payload)
         new_id = result.get("value", {}).get("id")
         if new_id:
             logger.info("Created supplier %s (id=%d)", supplier_name, new_id)
@@ -256,7 +256,7 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     if voucher_type:
         voucher["voucherType"] = voucher_type
     if invoice_number:
-        voucher["externalVoucherNumber"] = invoice_number
+        voucher["vendorInvoiceNumber"] = invoice_number
 
     logger.info("Creating supplier invoice voucher with %d postings", len(postings))
     return await _post_voucher(voucher, client)
