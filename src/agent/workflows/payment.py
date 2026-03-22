@@ -2,7 +2,6 @@ import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
-from .invoice import create_invoice
 
 logger = logging.getLogger("agent.workflows.payment")
 
@@ -206,26 +205,10 @@ async def register_payment(data: dict, client: TripletexClient) -> dict:
 
     invoice = await _find_invoice(data, client)
 
-    # If no invoice found, create one
+    # If no invoice found, fail fast — don't create a new invoice for a payment task
     if not invoice:
-        logger.info("No existing invoice found, creating one for payment")
-        invoice_data = {}
-        if data.get("customerName") or data.get("customerOrgNumber") or data.get("organizationNumber"):
-            invoice_data["customer"] = {}
-            if data.get("customerName"):
-                invoice_data["customer"]["name"] = data["customerName"]
-            if data.get("customerOrgNumber") or data.get("organizationNumber"):
-                invoice_data["customer"]["organizationNumber"] = data.get("customerOrgNumber") or data["organizationNumber"]
-        lines = data.get("orderLines") or data.get("lines") or []
-        if not lines and data.get("description") and data.get("amountExclVat"):
-            lines = [{"description": data["description"], "unitPriceExcludingVatCurrency": data["amountExclVat"], "count": 1}]
-        if lines:
-            invoice_data["orderLines"] = lines
-        invoice_result = await create_invoice(invoice_data, client)
-        invoice = invoice_result.get("value")
-        if not invoice:
-            logger.error("Failed to create invoice for payment: %s", invoice_result)
-            return {"error": "Could not find or create invoice for payment"}
+        logger.error("No existing invoice found for payment — searched by customer/description/ID")
+        return {"error": "Could not find existing invoice for payment. Check customer org number, invoice description, or provide invoiceId/invoiceNumber."}
 
     invoice_id = invoice["id"]
 

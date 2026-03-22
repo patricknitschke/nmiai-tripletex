@@ -60,7 +60,9 @@ created from scratch.
 
 Your plan should ALWAYS include a search step first for tasks that reference existing resources:
 - "Register payment on invoice" → First step: search for the existing invoice. If not found, create it.
-- "Issue credit note for invoice" → First step: search for the existing invoice. If not found, create it.
+- "Issue credit note for invoice" → Use create_credit_note with customer info. It searches automatically.
+- "Payment returned/reversed by bank" / "Annulez le paiement" / "Stornieren" → Use create_credit_note (NOT register_payment). \
+  A credit note properly reverses all accounting entries. NEVER use register_payment with negative amounts.
 - "Create employee/customer/product" → These are usually new, but the workflows handle search-before-create.
 - **"Overdue invoice" / "Mahngebühr" / "late fee" / "reminder fee"** → MUST use find_overdue_invoices \
   as the FIRST step. This finds the real customer and invoice. NEVER invent a customer name like \
@@ -100,6 +102,9 @@ Return ONLY valid JSON:
   a 'customer' object with name and organizationNumber. Include 3 order lines \
   with product numbers and VAT rates from the prompt."
 - Creating a SUPPLIER (leverandør/Lieferant/fournisseur) = create_customer with isSupplier: true.
+- **Payment returned/reversed/annulé/retourné/storniert:** ALWAYS use create_credit_note, \
+  NEVER register_payment. A credit note cleanly reverses the invoice. Pass customer org/name + \
+  invoice description so the workflow can find the invoice. Set sendToCustomer: false.
 - **VAT:** Standard Norwegian VAT is 25%. ALWAYS use vatRatePercent: 25 unless the prompt \
   explicitly says "exempt"/"fritatt"/"exonéré"/"0% MVA"/"sin impuestos". \
   IMPORTANT: "sin IVA"/"ohne MwSt"/"excl MVA"/"hors TVA"/"eksklusiv MVA" means the PRICE \
@@ -138,6 +143,20 @@ Return ONLY valid JSON:
   Never invent missing amounts; instruct the sub-agent to derive from payroll/ledger GET data or report missing data. \
   For linear depreciation, use depreciation expense debit (e.g. 6030) and accumulated depreciation credit (e.g. 1209), \
   not the gross asset account (1200).
+- **Expense analysis + project creation tasks** ("analyze ledger, identify top expense accounts, create projects"): \
+  Use EXACTLY this 2-step plan: \
+  (1) compare_expenses — set dateFrom and dateTo to cover the months mentioned in the prompt. \
+     dateTo is EXCLUSIVE: to include all of month N, use the 1st of month N+1. \
+     Examples: Jan+Feb → dateFrom=2026-01-01 dateTo=2026-03-01. Mar+Apr → dateFrom=2026-03-01 dateTo=2026-05-01. \
+     Set accountFrom=4000, accountTo=8999 for expense accounts. Set topN to match how many accounts the prompt asks for. \
+     The workflow auto-detects months and computes increases — no month numbers needed. \
+     This uses GET /ledger/posting (actual data) — NOT /resultbudget/company (budget data, returns 0). \
+  (2) create_project × N (one per top account) with isInternal=true and the account name as project name. \
+     Each project should include an embedded activity via activityName or projectActivities field. \
+     Tell the sub-agent: "Use the account names from compare_expenses top_increases as project names. \
+     Set isInternal=true. Add one activity per project (use the account name as the activity name too)." \
+  Do NOT use analyze_ledger for expense comparison — that's for error detection. \
+  Do NOT use /resultbudget/company — it returns budget data which may be empty.
 """
 
 

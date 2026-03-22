@@ -67,8 +67,12 @@ async def _get_project_activities(project_id: int, client: TripletexClient) -> d
 
 
 async def _set_project_hourly_rate(project_id: int, rate: float, client: TripletexClient) -> None:
-    """Configure a fixed hourly rate on the project so timesheet entries become chargeable."""
-    today = date.today().isoformat()
+    """Configure a fixed hourly rate on the project so timesheet entries become chargeable.
+
+    Idempotent: checks existing rates first to avoid duplicate writes (B54).
+    Uses startDate=2020-01-01 so rate covers all historical entries.
+    """
+    rate_start = "2020-01-01"
     search = await client.get("/project/hourlyRates", params={
         "projectId": str(project_id),
         "type": "TYPE_FIXED_HOURLY_RATE",
@@ -76,14 +80,6 @@ async def _set_project_hourly_rate(project_id: int, rate: float, client: Triplet
         "fields": "id,version,project,startDate,hourlyRateModel,fixedRate,showInProjectOrder",
     })
     existing_rates = search.get("values", [])
-
-    payload = {
-        "project": {"id": project_id},
-        "startDate": today,
-        "hourlyRateModel": "TYPE_FIXED_HOURLY_RATE",
-        "fixedRate": rate,
-        "showInProjectOrder": True,
-    }
 
     if existing_rates:
         existing = existing_rates[0]
@@ -94,16 +90,28 @@ async def _set_project_hourly_rate(project_id: int, rate: float, client: Triplet
             and abs(float(existing_rate) - rate) < 0.01
             and existing.get("showInProjectOrder") is True
         ):
-            logger.info("Project %d already has hourly rate %.2f", project_id, rate)
+            logger.info("Project %d already has hourly rate %.2f — skipping", project_id, rate)
             return
 
-        payload.update({
+        # Update existing rate to match
+        payload = {
             "id": existing["id"],
             "version": existing["version"],
-            "startDate": existing.get("startDate") or today,
-        })
+            "project": {"id": project_id},
+            "startDate": existing.get("startDate") or rate_start,
+            "hourlyRateModel": "TYPE_FIXED_HOURLY_RATE",
+            "fixedRate": rate,
+            "showInProjectOrder": True,
+        }
         result = await client.put(f"/project/hourlyRates/{existing['id']}", payload)
     else:
+        payload = {
+            "project": {"id": project_id},
+            "startDate": rate_start,
+            "hourlyRateModel": "TYPE_FIXED_HOURLY_RATE",
+            "fixedRate": rate,
+            "showInProjectOrder": True,
+        }
         result = await client.post("/project/hourlyRates", payload)
 
     if result.get("value", {}).get("id"):

@@ -180,112 +180,142 @@ async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
 
 
 async def compare_expenses(data: dict, client: TripletexClient) -> dict:
-    """Compare expenses across months using pre-aggregated resultbudget data.
+    """Compare actual expenses across months using ledger postings.
 
-    Uses GET /resultbudget/company which returns monthly totals per account
-    in a single call — much more efficient than fetching raw postings.
+    Fetches all posted expense transactions and aggregates by account per month.
+    Automatically detects which months are present and computes increases between
+    consecutive months. The caller (LLM) sets dateFrom/dateTo to cover the
+    relevant period — the workflow handles the rest.
+
+    Uses GET /ledger/posting (actual data) — NOT /resultbudget/company (budget data).
+    IMPORTANT: dateTo is EXCLUSIVE ("to and excl.").
 
     Input data fields:
-    - year: year to analyze (default: current year)
-    - accountFrom: optional account range start (e.g. 4000)
-    - accountTo: optional account range end (e.g. 7999)
+    - dateFrom: start date (yyyy-MM-dd), e.g. "2026-01-01"
+    - dateTo: end date (yyyy-MM-dd, EXCLUSIVE), e.g. "2026-03-01"
+    - accountFrom: optional account range start (default: 4000)
+    - accountTo: optional account range end (default: 8999)
     - topN: number of top accounts to return (default: 10)
     """
     today = date.today()
-    year = data.get("year", today.year)
+    date_from = data.get("dateFrom", f"{today.year}-01-01")
+    date_to = data.get("dateTo", f"{today.year}-{today.month + 1:02d}-01" if today.month < 12 else f"{today.year + 1}-01-01")
+    account_from = str(data.get("accountFrom", 4000))
+    account_to = str(data.get("accountTo", 8999))
     top_n = data.get("topN", 10)
 
-    logger.info("Comparing expenses for year %d via resultbudget/company", year)
+    logger.info(
+        "Comparing actual expenses %s to %s (excl), accounts %s-%s via /ledger/posting",
+        date_from, date_to, account_from, account_to,
+    )
 
-    # /resultbudget/company does NOT accept accountNumberFrom/To — filter client-side
-    account_from = int(data["accountFrom"]) if data.get("accountFrom") else None
-    account_to = int(data["accountTo"]) if data.get("accountTo") else None
-
-    # Paginate resultbudget
-    all_entries = []
+    # Fetch all postings with account range filter (server-side)
+    all_postings = []
     offset = 0
     page_size = 10000
     while True:
         params = {
-            "year": str(year),
-            "fields": "account(number,name),amount,accountingPeriod(*)",
+            "dateFrom": date_from,
+            "dateTo": date_to,
+            "accountNumberFrom": account_from,
+            "accountNumberTo": account_to,
             "from": str(offset),
             "count": str(page_size),
+            "fields": "id,date,account(*),amount,description",
         }
-        result = await client.get("/resultbudget/company", params=params)
+        result = await client.get("/ledger/posting", params=params)
         page = result.get("values", [])
-        all_entries.extend(page)
+        all_postings.extend(page)
         full_size = result.get("fullResultSize", len(page))
         if offset + len(page) >= full_size or not page:
             break
         offset += len(page)
 
-    # Client-side account range filter
-    entries = []
-    for entry in all_entries:
-        acct = entry.get("account", {})
-        acct_num = acct.get("number") if isinstance(acct, dict) else None
-        if acct_num is not None:
-            if account_from and acct_num < account_from:
-                continue
-            if account_to and acct_num > account_to:
-                continue
-        entries.append(entry)
-    logger.info("Fetched %d resultbudget entries (%d after account filter)", len(all_entries), len(entries))
+    logger.info("Fetched %d expense postings", len(all_postings))
 
-    if not entries:
-        return {"value": {"entries_count": 0, "monthly_totals": {}, "top_accounts": [], "summary": "No resultbudget data found"}}
+    if not all_postings:
+        return {"value": {"postings_count": 0, "monthly_totals": {}, "top_increases": [], "top_accounts": [],
+                          "summary": "No expense postings found in date range"}}
 
-    # Group by account and period
-    account_totals: dict[str, dict] = {}  # account_number -> {name, months: {period: amount}, total}
-    for entry in entries:
-        acct = entry.get("account", {})
+    # Aggregate amount per account per month
+    account_months: dict[str, dict] = {}
+    for p in all_postings:
+        acct = p.get("account", {})
         acct_num = str(acct.get("number", "?")) if isinstance(acct, dict) else "?"
         acct_name = acct.get("name", "") if isinstance(acct, dict) else ""
-        amount = entry.get("amount", 0)
-        period = entry.get("accountingPeriod", {})
-        period_num = period.get("number") if isinstance(period, dict) else None
+        amount = p.get("amount", 0)
+        posting_date = p.get("date", "")
+        if posting_date and len(posting_date) >= 7:
+            month_num = int(posting_date[5:7])
+        else:
+            continue
 
-        if acct_num not in account_totals:
-            account_totals[acct_num] = {"name": acct_name, "months": {}, "total": 0}
+        if acct_num not in account_months:
+            account_months[acct_num] = {"name": acct_name, "months": {}}
+        account_months[acct_num]["months"][month_num] = (
+            account_months[acct_num]["months"].get(month_num, 0) + amount
+        )
 
-        if period_num is not None:
-            account_totals[acct_num]["months"][period_num] = (
-                account_totals[acct_num]["months"].get(period_num, 0) + amount
-            )
-        account_totals[acct_num]["total"] += amount
+    # Detect the months present and compute max increase between consecutive months
+    all_months_present = sorted({m for info in account_months.values() for m in info["months"]})
 
-    # Top N accounts by absolute total
-    sorted_accounts = sorted(account_totals.items(), key=lambda x: abs(x[1]["total"]), reverse=True)
-    top_accounts = [
-        {
-            "account": num,
+    increases = []
+    for acct_num, info in account_months.items():
+        max_increase = 0.0
+        increase_from = None
+        increase_to = None
+        for i in range(len(all_months_present) - 1):
+            m1, m2 = all_months_present[i], all_months_present[i + 1]
+            delta = info["months"].get(m2, 0) - info["months"].get(m1, 0)
+            if delta > max_increase:
+                max_increase = delta
+                increase_from = m1
+                increase_to = m2
+        increases.append({
+            "account": acct_num,
             "name": info["name"],
-            "total": round(info["total"], 2),
+            "max_increase": round(max_increase, 2),
+            "increase_from_month": increase_from,
+            "increase_to_month": increase_to,
             "months": {k: round(v, 2) for k, v in sorted(info["months"].items())},
-        }
-        for num, info in sorted_accounts[:top_n]
-    ]
+        })
+
+    # Sort by largest increase first
+    increases.sort(key=lambda x: x["max_increase"], reverse=True)
+    top_increases = increases[:top_n]
+
+    # Also provide top accounts by absolute total (for general analysis)
+    all_accounts_sorted = sorted(
+        increases, key=lambda x: abs(sum(x["months"].values())), reverse=True
+    )
+    top_accounts = all_accounts_sorted[:top_n]
 
     # Monthly grand totals
     monthly_totals: dict[int, float] = {}
-    for info in account_totals.values():
+    for info in account_months.values():
         for month, amount in info["months"].items():
             monthly_totals[month] = monthly_totals.get(month, 0) + amount
     monthly_totals = {k: round(v, 2) for k, v in sorted(monthly_totals.items())}
 
-    logger.info("Expense comparison complete: %d accounts, top %d returned", len(account_totals), top_n)
+    months_str = " → ".join(str(m) for m in all_months_present)
+    logger.info(
+        "Expense comparison complete: %d accounts, months [%s], top %d increases returned",
+        len(account_months), months_str, len(top_increases),
+    )
 
     return {
         "value": {
-            "entries_count": len(entries),
-            "accounts_count": len(account_totals),
+            "postings_count": len(all_postings),
+            "accounts_count": len(account_months),
+            "months_found": all_months_present,
             "monthly_totals": monthly_totals,
+            "top_increases": top_increases,
             "top_accounts": top_accounts,
             "summary": (
-                f"Analyzed {len(account_totals)} accounts for {year}. "
-                f"Top {top_n} accounts by total amount included. "
-                "Monthly totals show expense trends across periods."
+                f"Analyzed {len(all_postings)} actual expense postings across {len(account_months)} accounts "
+                f"({date_from} to {date_to} excl). Months found: {months_str}. "
+                f"Top {len(top_increases)} accounts by largest month-over-month increase. "
+                f"Use top_increases[].name for project/account names."
             ),
         }
     }

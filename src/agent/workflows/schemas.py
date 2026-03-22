@@ -147,21 +147,21 @@ TASK_SCHEMAS: dict[str, dict] = {
     "create_credit_note": {
         "api_endpoint": "PUT /invoice/{id}/:createCreditNote (query params)",
         "notes": (
-            "SELF-CONTAINED: This workflow searches for the existing invoice by customer. "
-            "If no invoice is found, it creates one automatically. "
-            "You only need ONE step: call create_credit_note with customer info. "
-            "Do NOT create the invoice separately — the workflow handles everything."
+            "SELF-CONTAINED: Finds the existing invoice by customer org/name + description + amount, "
+            "then creates a credit note that fully reverses it. The invoice MUST already exist. "
+            "Use this for: credit notes, payment reversals (returned by bank), invoice cancellations. "
+            "NEVER use register_payment with negative amounts for reversals — always use this workflow."
         ),
         "fields": [
             {"name": "invoiceId", "type": "integer", "required": False, "description": "Invoice ID (if known)"},
             {"name": "invoiceNumber", "type": "integer", "required": False, "description": "Invoice number (if known)"},
-            {"name": "customerName", "type": "string", "required": False, "description": "Customer name — workflow searches for their existing invoice"},
-            {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Customer org number — workflow searches for their existing invoice"},
-            {"name": "description", "type": "string", "required": False, "description": "Invoice line description (e.g. 'Webdesign') — used if invoice must be created"},
-            {"name": "amount", "type": "number", "required": False, "description": "Invoice amount excl VAT — used if invoice must be created"},
+            {"name": "customerName", "type": "string", "required": False, "description": "Customer name — used to search for the invoice"},
+            {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Customer org number — used to search for the invoice"},
+            {"name": "description", "type": "string", "required": False, "description": "Invoice line description (e.g. 'Design web') — helps match the correct invoice"},
+            {"name": "amountExclVat", "type": "number", "required": False, "description": "Invoice amount excl VAT — helps match the correct invoice"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": True, "description": "Credit note date. Default to today."},
             {"name": "comment", "type": "string", "required": False, "description": "Comment on the credit note"},
-            {"name": "sendToCustomer", "type": "boolean", "required": False, "description": "Whether to send credit note to customer"},
+            {"name": "sendToCustomer", "type": "boolean", "required": False, "description": "Whether to send credit note to customer. Default false for reversals."},
         ],
     },
     "create_travel_expense": {
@@ -419,28 +419,33 @@ TASK_SCHEMAS: dict[str, dict] = {
             "IMPORTANT for missing-VAT corrections: do NOT post directly to account 2710 (system-managed). Instead: "
             "(1) create_voucher to reverse the original no-VAT posting, then (2) register_expense with amountInclVat "
             "(original amount × 1.25 for 25% VAT) — this auto-generates the 2710 VAT posting. "
-            "NOTE: For EXPENSE COMPARISON across months (not error correction), use compare_expenses instead — it uses "
-            "pre-aggregated monthly totals from /resultbudget/company, which is faster and avoids pagination issues."
+            "NOTE: For EXPENSE COMPARISON across months (not error correction), use compare_expenses instead — it "
+            "fetches actual postings from /ledger/posting and aggregates by account per month, returning top_increases."
         ),
         "fields": [
             {"name": "dateFrom", "type": "string (YYYY-MM-DD)", "required": False, "description": "Start date for analysis (default: Jan 1 current year)"},
-            {"name": "dateTo", "type": "string (YYYY-MM-DD)", "required": False, "description": "End date for analysis (default: Feb 28 current year)"},
+            {"name": "dateTo", "type": "string (YYYY-MM-DD)", "required": False, "description": "End date for analysis EXCLUSIVE (default: first day of next month after current range)"},
             {"name": "accountFrom", "type": "integer", "required": False, "description": "Optional: only analyze accounts from this number"},
             {"name": "accountTo", "type": "integer", "required": False, "description": "Optional: only analyze accounts up to this number"},
         ],
     },
     "compare_expenses": {
-        "api_endpoint": "GET /resultbudget/company",
+        "api_endpoint": "GET /ledger/posting",
         "notes": (
-            "Compares expenses across months using pre-aggregated resultbudget data. Returns monthly totals "
-            "per account and top N accounts by amount. ONE efficient call — no pagination risk. "
-            "Use this for expense comparison, trend analysis, 'which accounts spent most', 'compare Jan vs Feb'. "
-            "Do NOT use analyze_ledger for this — that fetches raw postings and risks missing rows."
+            "Compares ACTUAL expenses across months using posted ledger data. Fetches all postings in "
+            "the given date range and expense account range, aggregates by account per month, and "
+            "automatically computes the largest month-over-month increase for each account. "
+            "Returns top_increases (sorted by largest increase) and top_accounts (by absolute total). "
+            "The workflow auto-detects which months are present — no need to specify month numbers. "
+            "CRITICAL: dateTo is EXCLUSIVE — to include all of month N, use the 1st of month N+1. "
+            "Example: Jan+Feb → dateFrom=2026-01-01 dateTo=2026-03-01. Mar+Apr → dateFrom=2026-03-01 dateTo=2026-05-01. "
+            "Do NOT use /resultbudget/company — it returns budget data (0 entries if no budgets configured)."
         ),
         "fields": [
-            {"name": "year", "type": "integer", "required": False, "description": "Year to analyze (default: current year)"},
-            {"name": "accountFrom", "type": "integer", "required": False, "description": "Account range start (e.g. 4000 for expenses)"},
-            {"name": "accountTo", "type": "integer", "required": False, "description": "Account range end (e.g. 7999)"},
+            {"name": "dateFrom", "type": "string (YYYY-MM-DD)", "required": True, "description": "Start date — first day of the earlier month"},
+            {"name": "dateTo", "type": "string (YYYY-MM-DD)", "required": True, "description": "End date EXCLUSIVE — first day AFTER the later month"},
+            {"name": "accountFrom", "type": "integer", "required": False, "description": "Expense account range start (default: 4000)"},
+            {"name": "accountTo", "type": "integer", "required": False, "description": "Expense account range end (default: 8999)"},
             {"name": "topN", "type": "integer", "required": False, "description": "Number of top accounts to return (default: 10)"},
         ],
     },
