@@ -224,13 +224,15 @@ async def register_time(data: dict, client: TripletexClient) -> dict:
         return {"error": "Could not find activity for timesheet entry"}
 
     # Build timesheet entry
+    # NOTE: chargeableHours is readOnly on TimesheetEntry;
+    # the writable field is projectChargeableHours (min 0, max 24)
     entry = {
         "employee": {"id": employee_id},
         "project": {"id": project_id},
         "activity": {"id": activity_id},
         "date": entry_date,
         "hours": hours,
-        "chargeableHours": chargeable,
+        "projectChargeableHours": chargeable,
     }
 
     logger.info("Registering %s hours on project %d, activity %d, employee %d (date=%s)",

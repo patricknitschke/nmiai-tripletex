@@ -104,7 +104,7 @@ async def create_dimension_voucher(data: dict, client: TripletexClient) -> dict:
     - voucherDescription: description for the voucher
     - voucherDate: date for the voucher
     - linkValue: name of the dimension value to link the voucher to
-    - balancingAccount: credit account (defaults to 2400)
+    - balancingAccount: credit account (defaults to 1920)
     """
     # Step 1: Create dimension with values
     dim_result = await create_dimension(data, client)
@@ -144,7 +144,7 @@ async def create_dimension_voucher(data: dict, client: TripletexClient) -> dict:
     amount = data.get("voucherAmount") or data.get("amount")
     desc = data.get("voucherDescription") or data.get("description") or dim_result.get("dimensionName", "Dimension voucher")
     voucher_date = data.get("voucherDate") or data.get("date") or date.today().isoformat()
-    balancing = data.get("balancingAccount", 2400)
+    balancing = data.get("balancingAccount", 1920)
 
     if not account or not amount:
         # Still return the dimension result — Senior can post voucher manually

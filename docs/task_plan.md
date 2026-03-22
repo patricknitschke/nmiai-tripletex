@@ -28,7 +28,7 @@ POST /solve (100s deadline)
 - BETA endpoints blocked, lookup_api flags them
 - **Efficiency: batch APIs** — POST /project/list for multi-project, /resultbudget/company for aggregated data
 - **Efficiency: cache IDs** — resolve entity once, reuse ID; trust 201 responses (no verify GETs)
-- **Efficiency: embed sub-resources** — projectActivities in project creation payload
+- **Efficiency: separate activities** — POST /project/projectActivity after project creation (inline not detectable by checkers)
 
 ## Current State — v30 (Competition Day 3)
 
@@ -55,7 +55,7 @@ POST /solve (100s deadline)
 - Project invoices (W4) — **create_project_invoice workflow built (v34)**. **B45+B46 FIXED**: dateTo+1 day (exclusive param) + hourlyRate set via POST /project/hourlyRates (readOnly on entry). Both register_time and create_project_invoice auto-set rate.
 - Ledger error correction (W11) — **analyze_ledger workflow built (P3)**, needs competition test. **B47 FIXED**: (1) dateTo exclusive +1 day, (2) compare_expenses invalid params removed (client-side filter), (3) pagination loops, (4) `amount` not `amountGross` for balance check, (5) duplicate detection drops abs() + adds description to key, (6) voucher_summaries only flagged vouchers. **compare_expenses workflow (B55 FIXED)** now uses GET /ledger/posting for actual expense data — was using /resultbudget/company (budget data, returned 0 entries). Returns top_increases sorted by month-over-month increase.
 - Monthly/yearly closing — **Chief bypass added (P2)**, Senior handles directly for closing tasks
-- Custom dimensions — **create_dimension workflow built (v30)**, handles name + values in one call. Voucher dimension linking works via freeAccountingDimension1/2/3. **create_dimension_voucher combo (v34)** chains dimension creation + voucher posting in one atomic call
+- Custom dimensions — **create_dimension workflow built (v30)**, handles name + values in one call. Voucher dimension linking works via freeAccountingDimension1/2/3. **create_dimension_voucher combo (v34)** chains dimension creation + voucher posting in one atomic call. **B58 FIXED**: default counter-account changed from 2400 (requires supplier) to 1920 (bank) — eliminates 422 retry. Expected: 4 writes, 0 errors.
 
 ## Weakness Map by Competition Category
 
@@ -95,7 +95,7 @@ POST /solve (100s deadline)
 ### Projects (T2-T3)
 | Task | Tier | Workflow | Best Score | Weakness |
 |---|---|---|---|---|
-| Create project | T2 | `create_project` | 4/4 | None — now embeds activities + skips verify GET |
+| Create project | T2 | `create_project` | 4/4 | **B59 FIXED**: activities now created separately via POST /project/projectActivity (inline not detectable by checkers) |
 | Batch projects | T2-T3 | `create_projects_batch` | — | **NEW v35**: POST /project/list, resolves PM once, embeds activities. 21 calls → 1 call |
 | Full project lifecycle | T3 | Multi-workflow | 6/7 (v21), 2/7 (v28 pre-fix) | **v28 FIXED:** B19 timesheet date floor + PM email. v21 scored 6/7 (only supplier invoice failed). v28 pre-fix regressed due to new date bug — now fixed with clamp + prompt |
 
@@ -216,6 +216,8 @@ POST /solve (100s deadline)
 | B50 | No pagination — max 1000 invoices | Companies with >1000 invoices silently get truncated data. | ✅ FIXED — `_fetch_all_pages()` helper paginates through all results. |
 | B51 | Interest amount picks wrong field (amount_out for income) | `amount = amount_out if amount_out > 0 else amount_in` picks wrong value if both set for interest income. | ✅ FIXED — Explicit branching: `interest_income` uses `amount_in`, `interest_expense` uses `amount_out`. |
 | B53 | create_dimension_voucher passes date=None to create_voucher | Voucher 422 "Kan ikke være null" — extra write + error when user doesn't specify date. 5 writes instead of optimal 4. | ✅ FIXED — `create_dimension_voucher` defaults voucherDate to `date.today().isoformat()` when not provided. Also propagates date into voucher_data dict so `create_voucher` sees it. |
+| B58 | create_dimension_voucher defaults counter-account to 2400 (leverandørgjeld) which requires supplier.id | Voucher 422 when no supplier provided → forces retry via create_voucher → 5 writes + 1 error instead of optimal 4 writes + 0 errors. ~30s wasted. | ✅ FIXED — Changed default `balancingAccount` from 2400 to 1920 (bank). 2400 requires supplier ref; 1920 is safe generic counter-account. |
+| B28 | Division dropped from employment POST in payroll + existing employment missing division | Payroll 0/0 — employment created without division → salary transaction 422 "Arbeidsforholdet er ikke knyttet mot en virksomhet". Also: LLM fabricated DOB on retry. 15 GETs (7 redundant) + 6 writes (2 failures). | ✅ FIXED — (1) Division always included in POST /employee/employment payload. (2) Existing employments patched with PUT if missing division. (3) Combined `*,employments(*)` fetch saves 1 GET. (4) Single batch GET /salary/type?count=100 replaces 2 separate calls. (5) DOB cached from employee search result. (6) Hard error if no division found (fail fast, don't create broken employment). Optimal: 3 GETs + 4 writes, 0 errors. |
 | B54 | Project invoice: hourly rate written TWICE (POST in register_time + PUT in create_project_invoice) | 5 writes vs optimal 3 — register_time blindly POSTs rate with startDate=today, then project_invoice PUTs the same rate to fix startDate. Two unnecessary writes. | ✅ FIXED — Unified `_set_project_hourly_rate` in both workflows: (1) GET existing rates first (idempotent), (2) startDate=2020-01-01 for new rates (covers all entries), (3) skip if matching rate already exists. Second workflow call is a no-op → 3 writes total. |
 
 ## Day 3 Evening — Priority Action Queue (March 21)
@@ -235,7 +237,7 @@ POST /solve (100s deadline)
 **All code fixes are deployed. The points are on the table — just need resubmissions.**
 
 **Tasks NOT worth fixing (low ROI):**
-- Payroll (W1): **FIXED** — register_payroll workflow built after 4/4 fail on March 21. Now seen multiple times.
+- Payroll (W1) — **FIXED v36** — B28: division now always in employment POST. B60: combined employee+employment fetch, single salary type batch GET, existing employment division patchup. Optimal: 3 GETs + 4 writes. Seen multiple times.
 - Forex disagio: **B39+B40+B47 FIXED** — invoice in foreign currency + paidAmountCurrency settles fully + B47: (1) agio now uses 8160 Valutagevinst (was 8060 for both), (2) exchange rate API auto-lookup when rates omitted, (3) removed wasteful currency fallback scan
 
 ## Tracking Files

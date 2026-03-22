@@ -42,6 +42,9 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
             employee_id = existing_employee["id"]
             first_name = first_name or existing_employee.get("firstName", "")
             last_name = last_name or existing_employee.get("lastName", "")
+            # Capture DOB from search result so we don't need to re-fetch later
+            if existing_employee.get("dateOfBirth") and not data.get("dateOfBirth"):
+                data["dateOfBirth"] = existing_employee["dateOfBirth"]
 
     if not employee_id:
         if not data.get("dateOfBirth"):
@@ -65,25 +68,28 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
     logger.info("Employee ID: %d", employee_id)
 
     # --- Step 2: Ensure employment exists for this period ---
-    emp_detail = await client.get(f"/employee/{employee_id}", params={"fields": "employments(*)"})
+    # Fetch all employee fields + employments in a single call
+    emp_detail = await client.get(f"/employee/{employee_id}", params={"fields": "*,employments(*)"})
     emp_value = emp_detail.get("value", {})
     first_name = first_name or emp_value.get("firstName", "")
     last_name = last_name or emp_value.get("lastName", "")
     employments = emp_value.get("employments", [])
 
+    # Resolve division early — needed for both new and existing employments
+    division_id = await _resolve_division(client)
+    if not division_id:
+        return {"error": "No company division found. A division is required to link employment for salary transactions."}
+
     if not employments:
         logger.info("No employment record found, creating one...")
-        # Need dateOfBirth for employment creation — fetch full employee for version + dateOfBirth
-        emp_full = await client.get(f"/employee/{employee_id}")
-        emp_info = emp_full.get("value", {})
-        if not emp_info.get("dateOfBirth"):
+        if not emp_value.get("dateOfBirth"):
             dob = data.get("dateOfBirth")
             if not dob:
                 return {"error": "dateOfBirth is required to create employment for payroll"}
             logger.info("Setting employee %d dateOfBirth for employment requirement", employee_id)
             await client.put(f"/employee/{employee_id}", {
                 "id": employee_id,
-                "version": emp_info.get("version", 1),
+                "version": emp_value.get("version", 1),
                 "dateOfBirth": dob,
             })
 
@@ -93,11 +99,8 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
             "startDate": start_date,
             "isMainEmployer": True,
             "taxDeductionCode": "loennFraHovedarbeidsgiver",
+            "division": {"id": division_id},
         }
-        # Link employment to company division (required for salary transactions)
-        division_id = await _resolve_division(client)
-        if division_id:
-            employment_payload["division"] = {"id": division_id}
         emp_result = await client.post("/employee/employment", employment_payload)
         employment_id = emp_result.get("value", {}).get("id")
         if not employment_id:
@@ -141,11 +144,35 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
             logger.warning("Standard time creation may have failed: %s", hours_result)
 
         logger.info("Employment + details + hours created for employee %d", employee_id)
+    else:
+        # Existing employment — verify it has a division linked
+        employment = employments[0]
+        if not employment.get("division"):
+            logger.info("Existing employment %d missing division, linking to division %d", employment["id"], division_id)
+            await client.put(f"/employee/employment/{employment['id']}", {
+                "id": employment["id"],
+                "version": employment.get("version", 1),
+                "division": {"id": division_id},
+            })
 
     # --- Step 3: Look up salary types ---
-    base_salary_type_id = await _resolve_salary_type(client, search_term="Fast", preferred_names=("Fastlønn", "Fast"))
+    base_salary = data.get("baseSalary", 0)
+    bonus = data.get("bonus", 0)
+    need_bonus_type = bool(bonus)
+
+    # Fetch all active salary types in one call to avoid multiple GETs
+    salary_types_result = await client.get("/salary/type", params={"count": "100", "isInactive": "false"})
+    all_salary_types = salary_types_result.get("values", [])
+
+    base_salary_type_id = _match_salary_type(all_salary_types, preferred_names=("Fastlønn", "Fast"))
     if not base_salary_type_id:
         return {"error": "Could not find an active base salary type matching Fast/Fastlønn"}
+
+    bonus_type_id = None
+    if need_bonus_type:
+        bonus_type_id = _match_salary_type(all_salary_types, preferred_names=("Bonus",))
+        if not bonus_type_id:
+            bonus_type_id = base_salary_type_id
 
     # --- Step 4: Idempotency check ---
     allow_duplicate = data.get("allowDuplicate", False)
@@ -178,9 +205,6 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
             }
 
     # --- Step 5: Build specifications ---
-    base_salary = data.get("baseSalary", 0)
-    bonus = data.get("bonus", 0)
-
     specifications = []
 
     if base_salary:
@@ -193,10 +217,6 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
         })
 
     if bonus:
-        bonus_type_id = await _resolve_salary_type(client, search_term="Bonus", preferred_names=("Bonus",))
-        if not bonus_type_id:
-            bonus_type_id = base_salary_type_id
-
         specifications.append({
             "salaryType": {"id": bonus_type_id},
             "employee": {"id": employee_id},
@@ -265,6 +285,27 @@ async def _resolve_division(client: TripletexClient) -> int | None:
     return None
 
 
+def _match_salary_type(salary_types: list[dict], preferred_names: tuple[str, ...]) -> int | None:
+    """Match a salary type from a pre-fetched list by preferred names."""
+    normalized_preferences = tuple(_normalize(name) for name in preferred_names)
+
+    # Exact match first
+    for salary_type in salary_types:
+        salary_type_name = _normalize(salary_type.get("name", ""))
+        if salary_type_name in normalized_preferences:
+            logger.info("Found salary type '%s': id=%d", salary_type.get("name"), salary_type["id"])
+            return salary_type["id"]
+
+    # Partial match fallback
+    for salary_type in salary_types:
+        salary_type_name = _normalize(salary_type.get("name", ""))
+        if any(pref in salary_type_name for pref in normalized_preferences):
+            logger.info("Found salary type '%s': id=%d", salary_type.get("name"), salary_type["id"])
+            return salary_type["id"]
+
+    return None
+
+
 async def _find_existing_employee(client: TripletexClient, email: str, first_name: str, last_name: str) -> dict | None:
     """Find an existing employee by exact email or exact first/last name."""
     if email:
@@ -284,29 +325,5 @@ async def _find_existing_employee(client: TripletexClient, email: str, first_nam
                 and _normalize(employee.get("lastName", "")) == _normalize(last_name)
             ):
                 return employee
-
-    return None
-
-
-async def _resolve_salary_type(client: TripletexClient, search_term: str, preferred_names: tuple[str, ...]) -> int | None:
-    """Look up an active salary type and return the best preferred match."""
-    result = await client.get(
-        "/salary/type",
-        params={"name": search_term, "count": "10", "isInactive": "false"},
-    )
-    types = result.get("values", [])
-    normalized_preferences = tuple(_normalize(name) for name in preferred_names)
-
-    for salary_type in types:
-        salary_type_name = _normalize(salary_type.get("name", ""))
-        if salary_type_name in normalized_preferences:
-            logger.info("Found salary type '%s': id=%d", salary_type.get("name"), salary_type["id"])
-            return salary_type["id"]
-
-    for salary_type in types:
-        salary_type_name = _normalize(salary_type.get("name", ""))
-        if any(pref in salary_type_name for pref in normalized_preferences):
-            logger.info("Found salary type '%s': id=%d", salary_type.get("name"), salary_type["id"])
-            return salary_type["id"]
 
     return None

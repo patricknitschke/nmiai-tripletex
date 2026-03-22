@@ -37,7 +37,7 @@ TASK_SCHEMAS: dict[str, dict] = {
     },
     "create_customer": {
         "api_endpoint": "POST /customer",
-        "notes": "name is the only required field. isCustomer defaults to true in the workflow. Also used for suppliers (leverandør) — set isSupplier to true.",
+        "notes": "name is the only required field. isCustomer is readOnly (server defaults to true). Also used for suppliers (leverandør) — set isSupplier to true.",
         "fields": [
             {"name": "name", "type": "string", "required": True, "description": "Company or person name"},
             {"name": "email", "type": "string", "required": False, "description": "General email"},
@@ -60,7 +60,7 @@ TASK_SCHEMAS: dict[str, dict] = {
         "fields": [
             {"name": "name", "type": "string", "required": True, "description": "Department name"},
             {"name": "departmentNumber", "type": "string", "required": True, "description": "Department number (unique identifier). Default to '1' if not specified."},
-            {"name": "departmentManagerId", "type": "integer", "required": False, "description": "Employee ID of the department manager"},
+            {"name": "departmentManagerId", "type": "integer", "required": False, "description": "Employee ID of the department manager (workflow maps to departmentManager: {id: X})"},
         ],
     },
     "create_product": {
@@ -72,15 +72,16 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "costExcludingVatCurrency", "type": "number", "required": False, "description": "Cost/purchase price excluding VAT"},
             {"name": "priceExcludingVatCurrency", "type": "number", "required": False, "description": "Selling price excluding VAT"},
             {"name": "priceIncludingVatCurrency", "type": "number", "required": False, "description": "Selling price including VAT"},
-            {"name": "departmentId", "type": "integer", "required": False, "description": "Department ID to link product to"},
+            {"name": "departmentId", "type": "integer", "required": False, "description": "Department ID to link product to (workflow maps to department: {id: X})"},
         ],
     },
     "create_order": {
         "api_endpoint": "POST /order",
         "notes": (
             "customer is resolved by the workflow (by name or ID). "
-            "orderLines use exact API field names. product should be an object {id: int} if known, "
-            "otherwise omit and use description instead."
+            "orderLines use workflow field names — the workflow resolves them to API objects. "
+            "productNumber → product lookup → product: {id: X}. "
+            "vatRatePercent → vatType lookup → vatType: {id: X}."
         ),
         "fields": [
             {"name": "customerName", "type": "string", "required": False, "description": "Customer name (used to look up or create customer)"},
@@ -92,10 +93,10 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "receiverEmail", "type": "string", "required": False, "description": "Email to send order to"},
             {"name": "orderLines", "type": "array of objects", "required": True, "description": "Line items", "items": [
                 {"name": "description", "type": "string", "description": "Line description (product name or service)"},
-                {"name": "productNumber", "type": "string", "description": "Product number/SKU if specified in the prompt"},
+                {"name": "productNumber", "type": "string", "description": "Product number/SKU if specified (workflow resolves to product: {id: X})"},
                 {"name": "count", "type": "number", "description": "Quantity"},
                 {"name": "unitPriceExcludingVatCurrency", "type": "number", "description": "Unit price excluding VAT"},
-                {"name": "vatRatePercent", "type": "number", "description": "VAT rate as percentage (e.g. 25, 15, 12, 0) if specified"},
+                {"name": "vatRatePercent", "type": "number", "description": "VAT rate as percentage e.g. 25, 15, 12, 0 (workflow resolves to vatType: {id: X})"},
             ]},
         ],
     },
@@ -117,10 +118,10 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "sendToCustomer", "type": "boolean", "required": False, "description": "Whether to send the invoice to the customer"},
             {"name": "orderLines", "type": "array of objects", "required": True, "description": "Invoice line items", "items": [
                 {"name": "description", "type": "string", "description": "Line description (product/service name)"},
-                {"name": "productNumber", "type": "string", "description": "Product number/SKU if specified in the prompt"},
+                {"name": "productNumber", "type": "string", "description": "Product number/SKU if specified (workflow resolves to product: {id: X})"},
                 {"name": "count", "type": "number", "description": "Quantity (default 1)"},
                 {"name": "unitPriceExcludingVatCurrency", "type": "number", "description": "Unit price excluding VAT"},
-                {"name": "vatRatePercent", "type": "number", "description": "VAT rate as percentage (e.g. 25, 15, 12, 0) if specified"},
+                {"name": "vatRatePercent", "type": "number", "description": "VAT rate as percentage e.g. 25, 15, 12, 0 (workflow resolves to vatType: {id: X})"},
             ]},
         ],
     },
@@ -174,17 +175,17 @@ TASK_SCHEMAS: dict[str, dict] = {
         ),
         "fields": [
             {"name": "title", "type": "string", "required": True, "description": "Travel expense title"},
-            {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Travel date. Default to today."},
+            {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Travel date. Default to today. (readOnly on API — workflow maps to travelDetails dates)"},
             {"name": "employeeFirstName", "type": "string", "required": False, "description": "Employee first name if specified in prompt"},
             {"name": "employeeLastName", "type": "string", "required": False, "description": "Employee last name if specified in prompt"},
             {"name": "employeeEmail", "type": "string", "required": False, "description": "Employee email if specified in prompt"},
             {"name": "projectId", "type": "integer", "required": False, "description": "Project ID if expense is linked to a project"},
             {"name": "departmentId", "type": "integer", "required": False, "description": "Department ID if specified"},
-            {"name": "departureDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Departure date. Defaults to travel date."},
-            {"name": "returnDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Return date. Auto-calculated from departureDate + perDiem days if omitted."},
+            {"name": "departureDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Departure date. Defaults to travel date. (mapped to travelDetails.departureDate)"},
+            {"name": "returnDate", "type": "string (YYYY-MM-DD)", "required": False, "description": "Return date. Auto-calc from departureDate + perDiem days. (mapped to travelDetails.returnDate)"},
             {"name": "perDiem", "type": "object", "required": False, "description": "Per diem / daily allowance if mentioned", "items": [
-                {"name": "days", "type": "number", "description": "Number of days"},
-                {"name": "dailyRate", "type": "number", "description": "Daily rate in NOK"},
+                {"name": "days", "type": "number", "description": "Number of days (workflow maps to API field 'count')"},
+                {"name": "dailyRate", "type": "number", "description": "Daily rate in NOK (workflow maps to API field 'rate')"},
             ]},
             {"name": "costs", "type": "array of objects", "required": False, "description": "Cost/expense lines (NOT per diem)", "items": [
                 {"name": "comments", "type": "string", "description": "What the expense was for (e.g. 'Taxi', 'Togbillett', 'Flugticket')"},
@@ -207,7 +208,7 @@ TASK_SCHEMAS: dict[str, dict] = {
             "The workflow resolves by email first, then name, then falls back to any employee. "
             "startDate defaults to today if not specified. Do not guess employee IDs. "
             "Supports activityName to embed a project activity at creation time (no separate call needed). "
-            "For MULTIPLE projects, use create_projects_batch instead."
+            "For MULTIPLE projects, use create_projects_batch — it resolves PM once and loops POST /project."
         ),
         "fields": [
             {"name": "name", "type": "string", "required": True, "description": "Project name"},
@@ -226,17 +227,17 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "mainProjectId", "type": "integer", "required": False, "description": "Parent project ID if this is a sub-project"},
             {"name": "customerName", "type": "string", "required": False, "description": "Customer name (resolved to ID by workflow)"},
             {"name": "customerOrgNumber", "type": "string", "required": False, "description": "Customer org number (resolved to ID by workflow)"},
-            {"name": "activityName", "type": "string", "required": False, "description": "Name of a project activity to create with the project (embedded in payload, no separate call)"},
-            {"name": "projectActivities", "type": "array", "required": False, "description": "List of activities — strings or {name, activityType} dicts. Embedded at creation time."},
+            {"name": "activityName", "type": "string", "required": False, "description": "Name of a project activity to create with the project (created separately via POST /project/projectActivity)"},
+            {"name": "projectActivities", "type": "array", "required": False, "description": "List of activities — strings or {name, activityType} dicts. Created separately after project."},
             {"name": "projectManagerId", "type": "integer", "required": False, "description": "PM employee ID if already known (skips resolution — use when caching from a previous call)"},
         ],
     },
     "create_projects_batch": {
-        "api_endpoint": "POST /project/list",
+        "api_endpoint": "POST /project (loop)",
         "notes": (
-            "Creates MULTIPLE projects in a single API call. Resolves PM once and reuses for all projects. "
-            "Embeds projectActivities in each project. MUCH more efficient than calling create_project in a loop. "
-            "Use this when the task asks to create 2+ projects."
+            "Creates MULTIPLE projects by looping POST /project. Resolves PM once and reuses for all projects. "
+            "Creates activities separately via POST /project/projectActivity. More efficient than calling create_project in a loop "
+            "because PM resolution happens only once. Use this when the task asks to create 2+ projects."
         ),
         "fields": [
             {"name": "projects", "type": "array", "required": True, "description": "List of project dicts. Each must have 'name', may have 'activityName', 'isInternal', etc.",
@@ -297,6 +298,8 @@ TASK_SCHEMAS: dict[str, dict] = {
             "Use this for general ledger entries, corrections, or accounting entries "
             "that don't fit other workflow patterns. Each posting is a debit (positive amount) "
             "or credit (negative amount) on an account. "
+            "NOTE: Posting fields are workflow abstractions — 'account' (number) is resolved to account: {id: X}, "
+            "'dimensionId' + 'dimensionIndex' are mapped to freeAccountingDimension{N}: {id: X}. "
             "IMPORTANT: For postings on AR accounts (1500-1599), you MUST provide customerName "
             "or customerId at the top level — Tripletex requires a customer reference on AR postings."
         ),
@@ -306,11 +309,11 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "customerName", "type": "string", "required": False, "description": "Customer name — auto-attached to AR account postings (1500-1599). REQUIRED when posting to 1500."},
             {"name": "customerId", "type": "integer", "required": False, "description": "Customer ID — auto-attached to AR account postings (1500-1599). Use if ID is known."},
             {"name": "postings", "type": "array of objects", "required": True, "description": "List of posting lines", "items": [
-                {"name": "account", "type": "number", "required": True, "description": "Account number (e.g. 6300, 2400)"},
+                {"name": "account", "type": "number", "required": True, "description": "Account number e.g. 6300, 2400 (workflow resolves to account: {id: X})"},
                 {"name": "amount", "type": "number", "required": True, "description": "Amount: positive = debit, negative = credit"},
                 {"name": "description", "type": "string", "required": False, "description": "Posting description"},
-                {"name": "dimensionId", "type": "integer", "required": False, "description": "Accounting dimension value ID to link this posting to (from /ledger/accountingDimensionValue)"},
-                {"name": "dimensionIndex", "type": "integer", "required": False, "description": "Which dimension slot (1, 2, or 3) — defaults to 1"},
+                {"name": "dimensionId", "type": "integer", "required": False, "description": "Dimension value ID (workflow maps to freeAccountingDimension{N}: {id: X})"},
+                {"name": "dimensionIndex", "type": "integer", "required": False, "description": "Which dimension slot (1, 2, or 3) — defaults to 1. Maps to freeAccountingDimension{N}"},
             ]},
         ],
     },
@@ -331,8 +334,8 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "activityName", "type": "string", "required": False, "description": "Activity name (e.g. 'Utvikling', 'Konsultering')"},
             {"name": "hours", "type": "number", "required": True, "description": "Number of hours to register"},
             {"name": "date", "type": "string (YYYY-MM-DD)", "required": False, "description": "Date for the entry (defaults to today)"},
-            {"name": "chargeableHours", "type": "number", "required": False, "description": "Billable hours (defaults to same as hours)"},
-            {"name": "hourlyRate", "type": "number", "required": False, "description": "Hourly rate (NOK/h). Sets the project's hourly rate config so entries become chargeable. IMPORTANT: must be set BEFORE invoicing."},
+            {"name": "chargeableHours", "type": "number", "required": False, "description": "Billable hours (defaults to same as hours). NOTE: API field chargeableHours is readOnly — workflow passes it but Tripletex may ignore; the writable equivalent on the project level is managed separately."},
+            {"name": "hourlyRate", "type": "number", "required": False, "description": "Hourly rate (NOK/h). NOT set on timesheet entry (readOnly there) — workflow sets it via POST /project/hourlyRates instead. Must be set BEFORE invoicing."},
         ],
     },
     "register_employment": {
@@ -357,8 +360,8 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "annualSalary", "type": "number", "required": False, "description": "Annual salary in NOK"},
             {"name": "hoursPerDay", "type": "number", "required": False, "description": "Standard working hours per day (e.g. 7.5)"},
             {"name": "employmentType", "type": "string", "required": False, "description": "ORDINARY (default), MARITIME, FREELANCE"},
-            {"name": "employmentForm", "type": "string", "required": False, "description": "PERMANENT (default), TEMPORARY"},
-            {"name": "remunerationType", "type": "string", "required": False, "description": "MONTHLY_WAGE (default), HOURLY_WAGE, FEE"},
+            {"name": "employmentForm", "type": "string", "required": False, "description": "PERMANENT (default), TEMPORARY, PERMANENT_AND_HIRED_OUT, TEMPORARY_AND_HIRED_OUT, TEMPORARY_ON_CALL, NOT_CHOSEN"},
+            {"name": "remunerationType", "type": "string", "required": False, "description": "MONTHLY_WAGE (default), HOURLY_WAGE, FEE, COMMISION_PERCENTAGE, PIECEWORK_WAGE, NOT_CHOSEN"},
         ],
     },
     "reconcile_bank_statement": {
@@ -544,8 +547,8 @@ TASK_SCHEMAS: dict[str, dict] = {
         ),
         "fields": [
             {"name": "invoiceId", "type": "integer", "required": True, "description": "The overdue invoice ID (from find_overdue_invoices)"},
-            {"name": "reminderType", "type": "string", "required": False, "description": "SOFT_REMINDER | REMINDER | NOTICE_OF_DEBT_COLLECTION (default: REMINDER)"},
-            {"name": "includeCharge", "type": "boolean", "required": False, "description": "Include reminder fee / purregebyr (default: true)"},
+            {"name": "reminderType", "type": "string", "required": False, "description": "SOFT_REMINDER | REMINDER | NOTICE_OF_DEBT_COLLECTION | DEBT_COLLECTION (default: REMINDER). Workflow maps to API param 'type'."},
+            {"name": "includeCharge", "type": "boolean", "required": False, "description": "Include reminder fee / purregebyr (default: true — intentional override, API defaults to false)"},
             {"name": "includeInterest", "type": "boolean", "required": False, "description": "Include interest on overdue amount (default: false)"},
             {"name": "chargeAmount", "type": "number", "required": False, "description": "Reminder fee amount in NOK (default: 65, standard Norwegian purregebyr)"},
             {"name": "customerId", "type": "integer", "required": False, "description": "Customer ID (for fallback invoice path)"},

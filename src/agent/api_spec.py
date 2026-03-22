@@ -37,28 +37,39 @@ def _format_fields(spec: dict, schema: dict, depth: int = 0, max_depth: int = 1)
     if "$ref" in schema:
         schema = _resolve_ref(spec, schema["$ref"])
 
+    # Unwrap array schemas (e.g. POST /activity/list expects array of objects)
+    if schema.get("type") == "array" and "items" in schema:
+        schema = schema["items"]
+        if "$ref" in schema:
+            schema = _resolve_ref(spec, schema["$ref"])
+
     if schema.get("type") != "object" or "properties" not in schema:
         return []
 
-    required_set = set(schema.get("required", []))
     lines = []
     prefix = "    " * depth
 
     for name, prop in schema["properties"].items():
-        # Skip read-only/internal fields
-        if name in ("id", "version", "changes", "url", "displayName"):
-            continue
-
         actual = prop
         if "$ref" in prop:
             actual = _resolve_ref(spec, prop["$ref"])
+
+        # Skip readOnly fields (id, changes, url, etc.)
+        if actual.get("readOnly"):
+            continue
 
         field_type = actual.get("type", "object")
         if "$ref" in prop:
             ref_name = prop["$ref"].split("/")[-1]
             field_type = f"object ref → {ref_name}"
+        elif field_type == "array" and "items" in prop:
+            items = prop["items"]
+            if "$ref" in items:
+                ref_name = items["$ref"].split("/")[-1]
+                field_type = f"array of → {ref_name}"
+            else:
+                field_type = f"array of {items.get('type', 'object')}"
 
-        req = "REQUIRED" if name in required_set else "optional"
         desc = actual.get("description", "")
         if desc:
             desc = f" — {desc[:80]}"
@@ -66,7 +77,7 @@ def _format_fields(spec: dict, schema: dict, depth: int = 0, max_depth: int = 1)
         enum = actual.get("enum")
         enum_str = f", enum: {enum}" if enum else ""
 
-        lines.append(f"{prefix}  - {name} ({field_type}, {req}{enum_str}){desc}")
+        lines.append(f"{prefix}  - {name} ({field_type}{enum_str}){desc}")
 
         # Show nested object fields (1 level deep)
         if depth < max_depth and "$ref" in prop:
@@ -140,8 +151,11 @@ def get_endpoint(path: str, method: str = "post") -> str:
         json_content = content.get("application/json", content.get("application/json; charset=utf-8", {}))
         if json_content:
             schema = json_content.get("schema", {})
-            ref_name = schema.get("$ref", "").split("/")[-1] if "$ref" in schema else ""
-            lines.append(f"  Request body ({ref_name}):")
+            is_array = schema.get("type") == "array"
+            ref = schema.get("$ref", "") or schema.get("items", {}).get("$ref", "")
+            ref_name = ref.split("/")[-1] if ref else ""
+            array_note = "array of " if is_array else ""
+            lines.append(f"  Request body ({array_note}{ref_name}):")
             field_lines = _format_fields(spec, schema)
             lines.extend(field_lines[:30])  # Limit output
 

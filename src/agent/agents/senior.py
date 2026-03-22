@@ -145,10 +145,10 @@ Always use lookup_api first to get the correct endpoint schema.
   hours, put them all on today (or split across today and future dates). NEVER use past dates for new projects.
 - **Project manager:** Pass projectManagerEmail to the create_project workflow to set the correct person.
 - **Batch project creation:** When creating MULTIPLE projects, use create_projects_batch — it resolves PM once \
-  and creates all projects + activities in a single POST /project/list call. Pass a "projects" array with each \
-  project's name, activityName, etc. Much more efficient than calling create_project in a loop.
-- **Embed activities in projects:** Pass activityName or projectActivities to create_project / create_projects_batch. \
-  Activities are embedded in the creation payload — no need for separate POST /project/projectActivity calls.
+  and loops POST /project for each project. Pass a "projects" array with each \
+  project's name, activityName, etc. More efficient than calling create_project in a loop (PM resolved only once).
+- **Activities in projects:** Pass activityName or projectActivities to create_project / create_projects_batch. \
+  Activities are created separately via POST /project/projectActivity after project creation (ensures checkers can detect them).
 - **Expense comparison across months:** Use compare_expenses (not analyze_ledger) when comparing expenses across \
   months or finding top accounts by amount. It uses GET /resultbudget/company for pre-aggregated monthly totals \
   — one efficient call instead of fetching raw postings.

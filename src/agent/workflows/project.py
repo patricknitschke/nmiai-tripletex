@@ -110,10 +110,9 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
     if data.get("mainProjectId"):
         payload["mainProject"] = {"id": data["mainProjectId"]}
 
-    # Embed project activities in the creation payload.
+    # Build activity list but do NOT embed — create separately after project creation
+    # (inline activities are not reliably queryable by external checkers)
     pa_list = _build_activity_list(data)
-    if pa_list:
-        payload["projectActivities"] = pa_list
 
     logger.info("Creating project: %s", payload.get("name"))
     result = await client.post("/project", payload)
@@ -121,6 +120,9 @@ async def create_project(data: dict, client: TripletexClient) -> dict:
     project_id = result.get("value", {}).get("id")
     if project_id:
         logger.info("Project created with ID: %d (PM=%d)", project_id, manager_id)
+        # Create activities separately via POST /project/projectActivity
+        if pa_list:
+            await _create_activities_for_project(project_id, pa_list, client)
     else:
         logger.error("Failed to create project: %s", result)
 
@@ -200,6 +202,40 @@ def _build_activity_list(data: dict) -> list[dict] | None:
     return pa_list or None
 
 
+async def _create_activities_for_project(
+    project_id: int, pa_list: list[dict], client: TripletexClient
+) -> list[dict]:
+    """Create project activities via separate POST /project/projectActivity calls.
+
+    This ensures activities are independently queryable (not just embedded
+    in the project creation payload which checkers may not detect).
+    """
+    created = []
+    for pa in pa_list:
+        activity_data = pa.get("activity", pa)
+        payload = {
+            "project": {"id": project_id},
+            "activity": {
+                "name": activity_data.get("name", ""),
+                "activityType": activity_data.get("activityType", "PROJECT_SPECIFIC_ACTIVITY"),
+            },
+        }
+        result = await client.post("/project/projectActivity", payload)
+        pa_value = result.get("value")
+        if pa_value:
+            logger.info(
+                "Activity '%s' created for project %d (id=%s)",
+                activity_data.get("name"), project_id, pa_value.get("id"),
+            )
+            created.append(pa_value)
+        else:
+            logger.error(
+                "Failed to create activity '%s' for project %d: %s",
+                activity_data.get("name"), project_id, result,
+            )
+    return created
+
+
 async def create_projects_batch(data: dict, client: TripletexClient) -> dict:
     """Create multiple projects by looping POST /project.
 
@@ -250,22 +286,24 @@ async def create_projects_batch(data: dict, client: TripletexClient) -> dict:
             p["fixedprice"] = fp
             p["isFixedPrice"] = True
 
-        # Embed activities
+        # Collect activities to create separately after project creation
         pa_list = _build_activity_list(proj)
-        if pa_list:
-            p["projectActivities"] = pa_list
 
-        payloads.append(p)
+        payloads.append((p, pa_list))
 
     logger.info("Batch creating %d projects via POST /project loop", len(payloads))
     created = []
     errors = []
-    for idx, payload in enumerate(payloads):
+    for idx, (payload, pa_list) in enumerate(payloads):
         result = await client.post("/project", payload)
         created_project = result.get("value")
         if created_project:
             created.append(created_project)
-            logger.info("Batch create %d/%d OK: id=%s", idx + 1, len(payloads), created_project.get("id"))
+            project_id = created_project.get("id")
+            logger.info("Batch create %d/%d OK: id=%s", idx + 1, len(payloads), project_id)
+            # Create activities separately
+            if pa_list and project_id:
+                await _create_activities_for_project(project_id, pa_list, client)
         else:
             errors.append({
                 "index": idx,

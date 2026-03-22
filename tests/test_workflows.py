@@ -34,6 +34,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type(id=10, name="Fastlønn")]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 99}})
 
@@ -68,6 +69,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type()]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 1}})
 
@@ -84,6 +86,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee_no_emp]})
         mock_client.when_get("/employee/5", {"value": employee_no_emp})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_put("/employee/5", {"value": {"id": 5, "version": 2}})
         mock_client.when_post("/employee/employment", {"value": {"id": 20}})
         mock_client.when_post("/employee/employment/details", {"value": {"id": 30}})
@@ -109,6 +112,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type()]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 1}})
 
@@ -129,6 +133,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type()]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 1}})
 
@@ -149,6 +154,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type()]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 1}})
 
@@ -169,10 +175,8 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee/12", {"value": employee})
         mock_client.when_get("/employee", {"values": [employee]})
-        mock_client.when_get("/salary/type", [
-            {"values": [make_salary_type(id=10, name="Fastlønn")]},
-            {"values": [make_salary_type(id=11, name="Bonus")]},
-        ])
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
+        mock_client.when_get("/salary/type", {"values": [make_salary_type(id=10, name="Fastlønn"), make_salary_type(id=11, name="Bonus")]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 1}})
 
         result = await register_payroll({
@@ -183,8 +187,9 @@ class TestRegisterPayroll:
 
         assert "error" not in result
         mock_client.assert_not_called("POST", "/employee")
+        # Single batch fetch for all salary types (optimized from 2 calls to 1)
         salary_type_calls = mock_client.get_calls("GET", "/salary/type")
-        assert len(salary_type_calls) == 2
+        assert len(salary_type_calls) == 1
 
     async def test_requires_real_date_of_birth_for_new_employment(self, mock_client):
         """Payroll must not fabricate DOB when employment creation requires one."""
@@ -192,6 +197,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/5", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
 
         result = await register_payroll({
             "email": "new@x.org",
@@ -208,6 +214,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": []})
 
         result = await register_payroll({
@@ -223,6 +230,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type(id=10, name="Fastlønn")]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 1}})
 
@@ -240,6 +248,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type()]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 1}})
 
@@ -257,6 +266,7 @@ class TestRegisterPayroll:
         employee = make_employee(id=7, first_name="", last_name="", employments=[make_employment()])
 
         mock_client.when_get("/employee/7", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type()]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 1}})
 
@@ -273,6 +283,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type()]})
         mock_client.when_get("/salary/payslip", {"values": [{"id": 777}]})
 
@@ -296,6 +307,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type()]})
         mock_client.when_post("/salary/transaction", {"value": {"id": 123}})
 
@@ -317,6 +329,7 @@ class TestRegisterPayroll:
 
         mock_client.when_get("/employee", {"values": [employee]})
         mock_client.when_get("/employee/1", {"value": employee})
+        mock_client.when_get("/division", {"values": [{"id": 1, "name": "Test"}]})
         mock_client.when_get("/salary/type", {"values": [make_salary_type()]})
 
         result = await register_payroll({"email": "test@x.org"}, mock_client)
