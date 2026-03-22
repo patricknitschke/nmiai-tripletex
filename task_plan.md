@@ -42,3 +42,4 @@ Harden the highest-value canonical workflows against OpenAPI mismatches, ambiguo
 - [completed] Run focused workflow regressions and record residual unrelated failures in the broader suite
 - [completed] Extend coverage for credit-note matching and supplier-payment reconciliation
 - [completed] Remove remaining payroll/customer regression drift and restore green workflow suite
+- [completed] Do final prompt-corpus swipe and record dominant family-to-workflow mapping

@@ -42,12 +42,13 @@ _SUPPLIER_PREFIXES = [
     r"betaling\s+supplier\s+",
     r"zahlung\s+lieferant\s+",
     r"lieferant\s+",
-    r"pago\s+proveedor\s+",
+    r"pago\s+(?:a\s+)?proveedor\s+",
     r"proveedor\s+",
-    r"paiement\s+fournisseur\s+",
+    r"paiement\s+(?:à\s+)?fournisseur\s+",
     r"fournisseur\s+",
-    r"pagamento\s+fornecedor\s+",
+    r"pagamento\s+(?:a\s+)?fornecedor\s+",
     r"fornecedor\s+",
+    r"zahlung\s+an\s+",
     r"supplier\s+payment\s+",
     r"payment\s+supplier\s+",
     r"supplier\s+",
@@ -86,7 +87,7 @@ def _extract_name(description: str, prefixes: list[str]) -> str:
         if m:
             text = text[m.end():].strip()
             break
-    for sep in [" - ", " – ", " — ", " faktura ", " fakt ", " inv ", " invoice ", " ref "]:
+    for sep in [" - ", " – ", " — ", " faktura ", " fakt ", " inv ", " invoice ", " rechnung ", " factura ", " fatura ", " ref "]:
         idx = text.lower().find(sep)
         if idx > 0:
             text = text[:idx].strip()
@@ -257,7 +258,8 @@ def _match_customer_invoice(amount: float, desc: str, invoices: list[dict]) -> d
             o = _outstanding(inv)
             if o <= 0:
                 continue
-            if customer_name in _customer_name_of(inv) and abs(o - amount) < 0.01:
+            cn = _customer_name_of(inv)
+            if (customer_name in cn or cn in customer_name) and abs(o - amount) < 0.01:
                 return inv
 
     # Pass 3: customer name + any unpaid (partial payment)
@@ -265,7 +267,8 @@ def _match_customer_invoice(amount: float, desc: str, invoices: list[dict]) -> d
         for inv in invoices:
             if _outstanding(inv) <= 0:
                 continue
-            if customer_name in _customer_name_of(inv):
+            cn = _customer_name_of(inv)
+            if customer_name in cn or cn in customer_name:
                 return inv
 
     # Pass 4: exact amount (only if no name-based match found)
@@ -286,6 +289,10 @@ def _match_supplier_invoice(amount: float, desc: str, invoices: list[dict]) -> d
     """
     supplier_name = _extract_name(desc, _SUPPLIER_PREFIXES).lower()
 
+    def _name_match(a: str, b: str) -> bool:
+        """Bidirectional substring match for fuzzy name matching."""
+        return a in b or b in a
+
     if supplier_name:
         for si in invoices:
             o = _si_outstanding(si)
@@ -293,7 +300,7 @@ def _match_supplier_invoice(amount: float, desc: str, invoices: list[dict]) -> d
                 continue
             sn = si.get("supplier", {})
             si_name = (sn.get("name", "") if isinstance(sn, dict) else "").lower()
-            if supplier_name in si_name and abs(o - amount) < 0.01:
+            if _name_match(supplier_name, si_name) and abs(o - amount) < 0.01:
                 return si
 
     # Pass 2: name + any remaining outstanding (partial payment)
@@ -304,7 +311,7 @@ def _match_supplier_invoice(amount: float, desc: str, invoices: list[dict]) -> d
                 continue
             sn = si.get("supplier", {})
             si_name = (sn.get("name", "") if isinstance(sn, dict) else "").lower()
-            if supplier_name in si_name:
+            if _name_match(supplier_name, si_name):
                 return si
 
     # Pass 3: exact amount only

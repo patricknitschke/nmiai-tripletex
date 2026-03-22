@@ -31,6 +31,8 @@
 - Re-ran the previously failing subset: `pytest tests/test_workflows.py -k 'test_creates_employment_when_missing or test_requires_real_date_of_birth_for_new_employment or test_supplier_flag'` -> 3 passed.
 - Re-ran the full workflow suite on the live repo: `pytest tests/test_workflows.py` -> 69 passed.
 - Re-ran orchestrator coverage: `pytest tests/test_orchestrator.py` -> 3 passed.
+- Ran a final prompt-corpus sweep using `docs/tasks.csv` counts to confirm the dominant workflow families and recorded the resulting canonical mapping in findings.
+- Final live baseline after the sweep: workflow suite green (`69 passed`) and orchestrator routing green (`3 passed`).
 - Delegated a full workflow audit across sales, accounting, HR, and project domains against `docs/tripletex_openapi.json` and consolidated the actionable findings.
 - Hardened invoice/order creation to always preflight bank account 1920 and use `productNumber` for product lookups.
 - Hardened payment registration to stay customer-scoped only and to fail before PUT when `paidAmountCurrency` cannot be derived for foreign-currency invoices.

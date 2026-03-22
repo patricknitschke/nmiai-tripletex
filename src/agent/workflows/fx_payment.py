@@ -196,9 +196,14 @@ async def register_fx_payment(data: dict, client: TripletexClient) -> dict:
 
     force_manual_voucher = bool(data.get("forceManualFxVoucher"))
     if not force_manual_voucher and abs(outstanding_after) < 0.01 and abs(outstanding_currency_after) < 0.01:
-        result["message"] = "Payment registered; invoice settled with no residual outstanding. Skipped manual FX voucher."
-        logger.info("Skipping manual FX voucher: invoice settled with no residual outstanding")
-        return result
+        # Invoice fully settled — but we still need the FX difference voucher.
+        # Tripletex settles the invoice when paidAmountCurrency matches the full
+        # foreign amount, but does NOT auto-post the exchange difference journal entry.
+        # If we skip here, the disagio/agio is silently lost.
+        logger.info(
+            "Invoice settled (outstanding=0) but fx_diff=%.2f — posting FX voucher anyway",
+            fx_diff,
+        )
 
     if fx_diff > 0:
         # Gain (agio): debit 1500 AR, credit 8160 Valutagevinst

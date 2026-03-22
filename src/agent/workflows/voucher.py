@@ -395,7 +395,7 @@ async def _resolve_no_vat_type(client: TripletexClient) -> int | None:
     return None
 
 
-async def _resolve_postings(postings_data: list, voucher_date: str, description: str, client: TripletexClient, no_vat_type_id: int | None = None, voucher_customer_id: int | None = None, account_map: dict[str, dict] | None = None) -> list[dict]:
+async def _resolve_postings(postings_data: list, voucher_date: str, description: str, client: TripletexClient, no_vat_type_id: int | None = None, voucher_customer_id: int | None = None, account_map: dict[str, dict] | None = None, force_no_vat: bool = False) -> list[dict]:
     """Resolve account numbers to IDs for each posting using one account GET."""
     if account_map is None:
         account_numbers = _extract_account_numbers(postings_data)
@@ -426,7 +426,10 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
             logger.warning("Account %s could not be resolved", acc_num_str)
 
         # VAT type: only set on non-system accounts
-        if p.get("vatTypeId"):
+        # B59 fix: force_no_vat overrides account defaults for accruals/reversals/salary
+        if force_no_vat and no_vat_type_id:
+            posting["vatType"] = {"id": no_vat_type_id}
+        elif p.get("vatTypeId"):
             posting["vatType"] = {"id": p["vatTypeId"]}
         elif no_vat_type_id and not account_has_default_vat:
             posting["vatType"] = {"id": no_vat_type_id}
@@ -536,7 +539,7 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
         str(p.get("account") or p.get("accountNumber") or "").startswith(("4", "5", "6", "7"))
         for p in postings_data
     )
-    if has_expense_account and account_nums_in_postings & _SYSTEM_VAT_ACCOUNTS:
+    if has_expense_account and account_nums_in_postings & _SYSTEM_VAT_ACCOUNTS and not data.get("keepVatAccounts"):
         stripped = [str(n) for n in account_nums_in_postings & _SYSTEM_VAT_ACCOUNTS]
         postings_data = [
             p for p in postings_data
@@ -570,6 +573,10 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
     # that have default VAT configuration (causes "systemgenererte" 422 errors).
     no_vat_type_id = await _resolve_no_vat_type(client)
 
+    # B59 fix: for accruals, reversals, salary entries — force no-VAT on ALL postings
+    # to prevent Tripletex from auto-generating VAT on expense accounts with defaults.
+    force_no_vat = data.get("noVat", False)
+
     postings = await _resolve_postings(
         postings_data,
         voucher_date,
@@ -578,6 +585,7 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
         no_vat_type_id=no_vat_type_id,
         voucher_customer_id=voucher_customer_id,
         account_map=account_map,
+        force_no_vat=force_no_vat,
     )
 
     if external_voucher_number and not data.get("allowDuplicate"):

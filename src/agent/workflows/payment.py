@@ -125,8 +125,14 @@ async def _resolve_customer_id(data: dict, client: TripletexClient) -> int | Non
     customer_name = data.get("customerName")
     if customer_name:
         cust_result = await client.get("/customer", params={"customerName": customer_name, "count": "5"})
+        norm_name = _normalize(customer_name)
+        # Try exact match first, then bidirectional substring
         for customer in cust_result.get("values", []):
-            if _normalize(customer.get("name", "")) == _normalize(customer_name):
+            if _normalize(customer.get("name", "")) == norm_name:
+                return customer["id"]
+        for customer in cust_result.get("values", []):
+            cust_norm = _normalize(customer.get("name", ""))
+            if norm_name in cust_norm or cust_norm in norm_name:
                 return customer["id"]
 
     return None
@@ -225,13 +231,19 @@ async def register_payment(data: dict, client: TripletexClient) -> dict:
 
     invoice_id = invoice["id"]
 
-    # For "full payment", use the invoice's actual total amount (including VAT)
+    # Guard against double-payment: if invoice already fully paid, skip
+    outstanding = invoice.get("amountOutstanding")
+    if outstanding is not None and float(outstanding) < 0.01 and data.get("fullPayment"):
+        logger.info("Invoice %d already fully paid (outstanding=%.2f), skipping", invoice_id, float(outstanding))
+        return {"value": invoice, "alreadyPaid": True}
+
+    # For "full payment", use the invoice's actual outstanding amount (including VAT)
+    # Use explicit None check to avoid 0-is-falsy trap
     paid_amount = data.get("paidAmount")
     if paid_amount is None:
         paid_amount = data.get("amount")
     if paid_amount is None or data.get("fullPayment"):
-        # Use the invoice's outstanding amount (includes VAT)
-        paid_amount = invoice.get("amountOutstanding") or invoice.get("amount", 0)
+        paid_amount = outstanding if outstanding is not None else invoice.get("amount", 0)
         logger.info("Full payment: using invoice outstanding amount %s", paid_amount)
 
     # Get payment type ID
