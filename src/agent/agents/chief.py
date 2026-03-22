@@ -142,7 +142,13 @@ Return ONLY valid JSON:
   and confirm total debits equal total credits. \
   Never invent missing amounts; instruct the sub-agent to derive from payroll/ledger GET data or report missing data. \
   For linear depreciation, use depreciation expense debit (e.g. 6030) and accumulated depreciation credit (e.g. 1209), \
-  not the gross asset account (1200).
+  not the gross asset account (1200). \
+  **DEPRECIATION PRECISION:** Always compute depreciation with 2 decimal places: round(cost / years, 2). \
+  Example: 280000 / 9 = 31111.11, NOT 31111. 484650 / 8 = 60581.25, NOT 60581. \
+  Truncating to integers understates expense and cascades into wrong tax provisions. \
+  **BALANCE SHEET dateTo IS EXCLUSIVE:** When querying /balanceSheet for profit calculation, \
+  dateTo excludes that day. For year-end 2025, use dateTo=2026-01-01 (NOT 2025-12-31). \
+  For month-end March, use dateTo=2026-04-01. Getting this wrong excludes the last day's postings.
 - **Expense analysis + project creation tasks** ("analyze ledger, identify top expense accounts, create projects"): \
   Use EXACTLY this 2-step plan: \
   (1) compare_expenses — set dateFrom and dateTo to cover the months mentioned in the prompt. \

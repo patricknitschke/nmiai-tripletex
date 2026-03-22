@@ -23,14 +23,16 @@ async def _ensure_bank_account(client: TripletexClient) -> None:
         "fields": "id,version,name,bankAccountNumber",
     })
     accounts = result.get("values", [])
-    if accounts and accounts[0].get("bankAccountNumber"):
-        logger.info("Bank account already exists on account 1920")
+    desired_bank_number = "86011117947"
+
+    if accounts and accounts[0].get("bankAccountNumber") == desired_bank_number:
+        logger.info("Bank account 1920 already matches desired state → skipping PUT")
         client._bank_account_ready = True
         return
 
-    # Create or update account 1920 with a dummy bank account number
+    # Create or update account 1920 with the bank account number
     if accounts:
-        # Account exists but has no bank number — update it
+        # Account exists but bank number missing or different — update it
         account_id = accounts[0]["id"]
         logger.info("Updating account 1920 (id=%d) with bank account number", account_id)
         write_result = await client.put(f"/ledger/account/{account_id}", {
@@ -38,7 +40,7 @@ async def _ensure_bank_account(client: TripletexClient) -> None:
             "version": accounts[0]["version"],
             "name": accounts[0].get("name", "Bank"),
             "number": 1920,
-            "bankAccountNumber": "86011117947",
+            "bankAccountNumber": desired_bank_number,
             "isBankAccount": True,
         })
     else:
@@ -47,7 +49,7 @@ async def _ensure_bank_account(client: TripletexClient) -> None:
         write_result = await client.post("/ledger/account", {
             "name": "Bank",
             "number": 1920,
-            "bankAccountNumber": "86011117947",
+            "bankAccountNumber": desired_bank_number,
             "isBankAccount": True,
         })
 

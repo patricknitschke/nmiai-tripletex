@@ -123,7 +123,13 @@ Always use lookup_api first to get the correct endpoint schema.
     Do NOT invent amounts. If an amount is missing in the prompt (for example salary accrual), either derive it from \
     payroll/ledger GET data or explicitly report the amount as missing. \
     For linear depreciation, use expense account on debit (e.g. 6030) and accumulated depreciation contra-account on credit \
-    (e.g. 1209), NOT the gross asset account (1200). Depreciation formula when required: acquisition_cost / useful_life_years / 12.
+    (e.g. 1209), NOT the gross asset account (1200). \
+    **DEPRECIATION PRECISION:** Always use 2 decimal places: round(cost / years, 2) for annual, \
+    round(cost / years / 12, 2) for monthly. Example: 280000 / 9 = 31111.11, NOT 31111. \
+    484650 / 8 = 60581.25, NOT 60581. Integer truncation understates expense and cascades into wrong tax. \
+    **BALANCE SHEET dateTo IS EXCLUSIVE:** /balanceSheet dateTo excludes that day. \
+    For year-end 2025 profit, use dateFrom=2025-01-01&dateTo=2026-01-01 (NOT dateTo=2025-12-31). \
+    For month-end March, use dateTo=2026-04-01. This is the #1 cause of wrong tax provisions.
 - **Ledger error correction (Hauptbuch/grand livre/livro razão):** Use analyze_ledger first, then fix each error: \
   (1) Wrong account → create_voucher: debit correct account, credit wrong account (or vice versa). \
   (2) Duplicate voucher → create_voucher: reverse the duplicate (negate both postings). \
