@@ -114,10 +114,16 @@ Always use lookup_api first to get the correct endpoint schema.
   departmentName, startDate, occupationCode (STYRK/yrkeskode — a 4-digit code like "2411"), \
   percentageOfFullTimeEquivalent, annualSalary, hoursPerDay. Don't skip any field that's in the document.
 - **Month-end/year-end closing (avskrivning/periodisering/accrual/depreciation/salary provision):** \
-  The prompt gives you the exact accounts and amounts. Do NOT investigate or analyze the ledger first. \
-  Just calculate the amounts and call create_voucher IMMEDIATELY. Post EACH journal entry as a SEPARATE \
-  create_voucher call (not all in one). Example: accrual reversal = one voucher, depreciation = one voucher, \
-  salary provision = one voucher. Depreciation formula: acquisition_cost / useful_life_years / 12.
+    Follow this exact sequence for multi-entry closing tasks to avoid 422 errors and unnecessary writes: \
+    (1) Gather all account numbers needed across ALL entries, then do ONE GET /ledger/account with comma-separated numbers. \
+    (2) If any accounts are missing, create them with POST /ledger/account BEFORE any voucher POST. \
+    (3) Post EACH journal entry as a SEPARATE create_voucher call (not all in one). \
+    (4) If the task asks to verify trial balance (e.g. "kontroller at saldobalansen går i null"), call \
+    GET /balanceSheet?dateFrom=YYYY-MM-01&dateTo=YYYY-MM+1-01 and confirm debits equal credits. \
+    Do NOT invent amounts. If an amount is missing in the prompt (for example salary accrual), either derive it from \
+    payroll/ledger GET data or explicitly report the amount as missing. \
+    For linear depreciation, use expense account on debit (e.g. 6030) and accumulated depreciation contra-account on credit \
+    (e.g. 1209), NOT the gross asset account (1200). Depreciation formula when required: acquisition_cost / useful_life_years / 12.
 - **Ledger error correction (Hauptbuch/grand livre/livro razão):** Use analyze_ledger first, then fix each error: \
   (1) Wrong account → create_voucher: debit correct account, credit wrong account (or vice versa). \
   (2) Duplicate voucher → create_voucher: reverse the duplicate (negate both postings). \

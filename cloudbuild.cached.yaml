@@ -1,0 +1,24 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -lc
+      - docker pull ${_IMAGE}:latest || true
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --cache-from
+      - ${_IMAGE}:latest
+      - -t
+      - ${_IMAGE}:${_TAG}
+      - -t
+      - ${_IMAGE}:latest
+      - .
+
+images:
+  - ${_IMAGE}:${_TAG}
+  - ${_IMAGE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY

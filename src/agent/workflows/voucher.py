@@ -26,6 +26,50 @@ async def _resolve_accounts_batch(client: TripletexClient, account_numbers: set[
     }
 
 
+def _extract_account_numbers(postings_data: list[dict]) -> set[str]:
+    return {
+        str(p.get("account") or p.get("accountNumber"))
+        for p in postings_data
+        if p.get("account") or p.get("accountNumber")
+    }
+
+
+async def _ensure_accounts_exist(client: TripletexClient, account_numbers: set[str]) -> tuple[dict[str, dict], list[str]]:
+    """Resolve accounts once, create missing ones, and verify all are available."""
+    if not account_numbers:
+        return {}, []
+
+    account_map = await _resolve_accounts_batch(client, account_numbers)
+    missing = sorted(acc for acc in account_numbers if acc not in account_map)
+    created_numbers: list[str] = []
+
+    for acc_num in missing:
+        if not acc_num.isdigit():
+            logger.error("Cannot create account with non-numeric number: %s", acc_num)
+            continue
+
+        create_result = await client.post(
+            "/ledger/account",
+            {
+                "number": int(acc_num),
+                "name": f"Auto-created account {acc_num}",
+            },
+        )
+        created_id = create_result.get("value", {}).get("id")
+        if created_id:
+            logger.info("Created missing account %s (id=%s)", acc_num, created_id)
+            created_numbers.append(acc_num)
+        else:
+            logger.error("Failed to create missing account %s: %s", acc_num, create_result)
+
+    if created_numbers:
+        refreshed = await _resolve_accounts_batch(client, set(created_numbers))
+        account_map.update(refreshed)
+
+    unresolved = sorted(acc for acc in account_numbers if acc not in account_map)
+    return account_map, unresolved
+
+
 async def _get_vat_types(client: TripletexClient, direction: str | None = None) -> list[dict]:
     params = {"count": "100"}
     if direction in {"input", "output"}:
@@ -137,11 +181,15 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     # Resolve supplier
     supplier_id = await _resolve_supplier(data, client)
 
-    # Resolve expense + AP account in one API call.
+    # Resolve expense + AP account in one API call, create missing accounts, then re-check.
     account_numbers = {"2400"}
     if expense_account:
         account_numbers.add(str(expense_account))
-    account_map = await _resolve_accounts_batch(client, account_numbers)
+    account_map, unresolved_accounts = await _ensure_accounts_exist(client, account_numbers)
+    if unresolved_accounts:
+        return {
+            "error": f"Could not resolve/create ledger accounts: {', '.join(unresolved_accounts)}"
+        }
 
     expense_account_id = None
     if expense_account:
@@ -241,14 +289,11 @@ async def _resolve_no_vat_type(client: TripletexClient) -> int | None:
     return None
 
 
-async def _resolve_postings(postings_data: list, voucher_date: str, description: str, client: TripletexClient, no_vat_type_id: int | None = None, voucher_customer_id: int | None = None) -> list[dict]:
+async def _resolve_postings(postings_data: list, voucher_date: str, description: str, client: TripletexClient, no_vat_type_id: int | None = None, voucher_customer_id: int | None = None, account_map: dict[str, dict] | None = None) -> list[dict]:
     """Resolve account numbers to IDs for each posting using one account GET."""
-    account_numbers = {
-        str(p.get("account") or p.get("accountNumber"))
-        for p in postings_data
-        if p.get("account") or p.get("accountNumber")
-    }
-    account_map = await _resolve_accounts_batch(client, account_numbers)
+    if account_map is None:
+        account_numbers = _extract_account_numbers(postings_data)
+        account_map = await _resolve_accounts_batch(client, account_numbers)
 
     row_counter = 1
     resolved = []
@@ -367,6 +412,24 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
     if not postings_data:
         return {"error": "No postings provided for voucher"}
 
+    # Never invent voucher amounts; every posting must include amount or amountGross.
+    missing_amount_rows = [
+        idx + 1
+        for idx, posting in enumerate(postings_data)
+        if posting.get("amount") is None and posting.get("amountGross") is None
+    ]
+    if missing_amount_rows:
+        rows = ", ".join(str(r) for r in missing_amount_rows)
+        return {"error": f"Missing amount on posting row(s): {rows}"}
+
+    # Pre-validate all accounts in one GET and create missing accounts before voucher POST.
+    account_numbers = _extract_account_numbers(postings_data)
+    account_map, unresolved_accounts = await _ensure_accounts_exist(client, account_numbers)
+    if unresolved_accounts:
+        return {
+            "error": f"Could not resolve/create ledger accounts: {', '.join(unresolved_accounts)}"
+        }
+
     # Resolve customer once; _resolve_postings attaches it to CUSTOMER ledger lines.
     voucher_customer_id = await _resolve_customer_for_voucher(data, client)
 
@@ -382,6 +445,7 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
         client,
         no_vat_type_id=no_vat_type_id,
         voucher_customer_id=voucher_customer_id,
+        account_map=account_map,
     )
 
     voucher = {

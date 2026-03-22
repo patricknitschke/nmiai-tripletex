@@ -804,7 +804,10 @@ class TestCreateVoucher:
     async def test_voucher_posts_with_resolved_accounts(self, mock_client):
         """create_voucher should resolve account numbers to IDs."""
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
-        mock_client.when_get("/ledger/account", {"values": [make_account(id=50, number=6300)]})
+        mock_client.when_get("/ledger/account", {"values": [
+            make_account(id=50, number=6300),
+            make_account(id=51, number=1920),
+        ]})
         mock_client.when_post("/ledger/voucher", {"value": {"id": 1}})
 
         await create_voucher({
@@ -816,6 +819,60 @@ class TestCreateVoucher:
         }, mock_client)
 
         mock_client.assert_called("POST", "/ledger/voucher")
+
+    async def test_creates_missing_accounts_before_posting_voucher(self, mock_client):
+        """Missing accounts should be created before voucher POST to avoid 422."""
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+        mock_client.when_get("/ledger/account", [
+            {"values": []},
+            {"values": [make_account(id=70, number=6030), make_account(id=71, number=1209)]},
+        ])
+        mock_client.when_post("/ledger/account", [
+            {"value": {"id": 70, "number": 6030}},
+            {"value": {"id": 71, "number": 1209}},
+        ])
+        mock_client.when_post("/ledger/voucher", {"value": {"id": 1}})
+
+        await create_voucher({
+            "description": "Linear depreciation",
+            "postings": [
+                {"account": 6030, "amount": 1000},
+                {"account": 1209, "amount": -1000},
+            ],
+        }, mock_client)
+
+        account_posts = mock_client.get_calls("POST", "/ledger/account")
+        assert len(account_posts) == 2
+        assert account_posts[0]["payload"]["number"] == 1209
+        assert account_posts[1]["payload"]["number"] == 6030
+
+        voucher_call = mock_client.get_calls("POST", "/ledger/voucher")[0]
+        assert voucher_call["payload"]["postings"][0]["account"]["id"] == 70
+        assert voucher_call["payload"]["postings"][1]["account"]["id"] == 71
+
+        post_order = [
+            (c["method"], c["endpoint"])
+            for c in mock_client.calls
+            if c["method"] == "POST" and c["endpoint"] in {"/ledger/account", "/ledger/voucher"}
+        ]
+        assert post_order == [
+            ("POST", "/ledger/account"),
+            ("POST", "/ledger/account"),
+            ("POST", "/ledger/voucher"),
+        ]
+
+    async def test_rejects_postings_without_amount(self, mock_client):
+        """Workflow must fail fast when a posting amount is missing."""
+        result = await create_voucher({
+            "description": "Salary accrual",
+            "postings": [
+                {"account": 5090},
+                {"account": 2930, "amount": -50000},
+            ],
+        }, mock_client)
+
+        assert result["error"] == "Missing amount on posting row(s): 1"
+        mock_client.assert_not_called("POST", "/ledger/voucher")
 
 
 # ============================================================

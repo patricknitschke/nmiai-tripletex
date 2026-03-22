@@ -1,0 +1,17 @@
+# Keep Cloud Build context small and stable for faster uploads/builds.
+.git
+.gitignore
+.venv
+__pycache__/
+*.pyc
+*.pyo
+.env
+.claude/
+.pytest_cache/
+
+# Not needed at build time
+scripts/
+tripletex-mcp-main/
+tests/
+*.md
+docs/*.md

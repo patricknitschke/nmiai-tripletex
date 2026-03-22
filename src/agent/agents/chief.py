@@ -127,6 +127,15 @@ Return ONLY valid JSON:
   across today and future dates if needed). NEVER tell them to use past dates for a new project.
 - **Project manager:** When the prompt specifies who the project manager is, pass their email as \
   projectManagerEmail to the create_project workflow so the correct person is set as manager.
+- **Month-end/year-end closing plans:** For tasks with multiple journal entries, your plan MUST enforce this order: \
+  (1) gather all accounts and run ONE GET /ledger/account with comma-separated numbers, \
+  (2) create any missing accounts with POST /ledger/account, \
+  (3) post one voucher per journal entry, \
+  (4) if asked to verify trial balance ("saldobalanse går i null"), run GET /balanceSheet for the target month \
+  and confirm total debits equal total credits. \
+  Never invent missing amounts; instruct the sub-agent to derive from payroll/ledger GET data or report missing data. \
+  For linear depreciation, use depreciation expense debit (e.g. 6030) and accumulated depreciation credit (e.g. 1209), \
+  not the gross asset account (1200).
 """
 
 
