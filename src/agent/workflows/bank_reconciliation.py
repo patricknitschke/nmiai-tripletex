@@ -5,7 +5,6 @@ import re
 from datetime import date
 
 from ..tripletex import TripletexClient
-from .voucher import _resolve_no_vat_type
 
 logger = logging.getLogger("agent.workflows.bank_reconciliation")
 
@@ -75,6 +74,10 @@ _INVOICE_REF_PATTERNS = [
 
 _FEE_KEYWORDS = ["bankgebyr", "gebyr", "gebühr", "fee", "taxa", "tarifa", "frais"]
 _INTEREST_KEYWORDS = ["rente", "zinsen", "interest", "juros", "interés", "intérêt"]
+_TAX_KEYWORDS = [
+    "skattetrekk", "forskuddstrekk", "arbeidsgiveravgift", "skatt", "tax withholding",
+    "payroll tax", "lohnsteuer", "retención", "retenção",
+]
 _SUPPLIER_KEYWORDS = [
     "leverand", "lieferant", "fournisseur", "fornecedor", "proveedor", "supplier",
 ]
@@ -209,8 +212,8 @@ def _normalize_rows(parsed: list[dict]) -> list[dict]:
 
 def _classify(desc: str, amount_in: float, amount_out: float) -> str:
     """Classify a bank row.
-    
-    Returns: 'customer'|'supplier'|'fee'|'interest_income'|'interest_expense'|'unknown'.
+
+    Returns: 'customer'|'supplier'|'fee'|'interest_income'|'interest_expense'|'tax_payment'|'unknown'.
     """
     dl = desc.lower()
     if any(kw in dl for kw in _FEE_KEYWORDS):
@@ -220,6 +223,9 @@ def _classify(desc: str, amount_in: float, amount_out: float) -> str:
         if amount_in > 0:
             return "interest_income"
         return "interest_expense"
+    # Tax withholding / payroll tax remittances — must check before customer/supplier fallback
+    if any(kw in dl for kw in _TAX_KEYWORDS):
+        return "tax_payment"
     if amount_out > 0 and any(kw in dl for kw in _SUPPLIER_KEYWORDS):
         return "supplier"
     if amount_in > 0:
@@ -360,31 +366,66 @@ async def _pay_supplier_invoice(
     })
 
 
+async def _resolve_supplier_by_name(name: str, client: TripletexClient) -> int | None:
+    """Lightweight supplier lookup by name. Returns ID or None (never creates)."""
+    if not name:
+        return None
+    result = await client.get("/supplier", params={"name": name, "count": "5"})
+    for sup in result.get("values", []):
+        if sup.get("name", "").lower() == name.lower():
+            logger.info("Resolved supplier '%s' -> id=%d", name, sup["id"])
+            return sup["id"]
+    # Fuzzy: check if extracted name is a substring of any supplier name
+    for sup in result.get("values", []):
+        if name.lower() in sup.get("name", "").lower():
+            logger.info("Resolved supplier '%s' (fuzzy) -> id=%d", name, sup["id"])
+            return sup["id"]
+    logger.warning("Could not resolve supplier '%s' — posting without supplier ref", name)
+    return None
+
+
 # All accounts used by fee/interest vouchers — pre-fetched once in reconcile_bank_statement.
-_FEE_INTEREST_ACCOUNTS = {"1920", "7770", "8040", "8050"}
+_FEE_INTEREST_ACCOUNTS = {"1920", "2400", "2600", "7770", "8040", "8050"}
 
 
 async def _prefetch_fee_accounts(client: TripletexClient) -> dict[str, int]:
     """Fetch account IDs for all fee/interest accounts in one GET."""
     acct_numbers = ",".join(sorted(_FEE_INTEREST_ACCOUNTS))
-    result = await client.get("/ledger/account", params={"number": acct_numbers, "count": "10"})
+    result = await client.get("/ledger/account", params={"number": acct_numbers, "count": "100"})
     return {str(a.get("number")): a["id"] for a in result.get("values", []) if a.get("id")}
 
 
 async def _post_fee_or_interest_voucher(
     amount: float, tx_date: str, description: str, tx_type: str,
     client: TripletexClient, account_cache: dict[str, int],
+    *, is_incoming: bool = False,
 ) -> bool:
-    """Post a bank fee or interest voucher.
+    """Post a bank fee, interest, or tax-payment voucher.
 
     Fee:              Debit 7770 (bankgebyr)        / Credit 1920 (bank)
+    Fee refund (Inn): Debit 1920 (bank)             / Credit 7770 (bankgebyr)
     Interest income:  Debit 1920 (bank)             / Credit 8040 (renteinntekt)
     Interest expense: Debit 8050 (rentekostnad)     / Credit 1920 (bank)
+    Tax payment:      Debit 2600 (forskuddstrekk)   / Credit 1920 (bank)
+    Tax refund (Inn): Debit 1920 (bank)             / Credit 2600 (forskuddstrekk)
+
+    VAT is OMITTED — accounts 1920/7770/8040/8050/2600 have locked VAT defaults
+    (code 0 = "Ingen avgiftsbehandling"). Sending any vatType causes 422.
     """
     if tx_type == "fee":
-        debit_acct, credit_acct = "7770", "1920"
+        if is_incoming:
+            # Fee refund: bank goes UP, expense reversed
+            debit_acct, credit_acct = "1920", "7770"
+        else:
+            debit_acct, credit_acct = "7770", "1920"
     elif tx_type == "interest_income":
         debit_acct, credit_acct = "1920", "8040"
+    elif tx_type == "tax_payment":
+        if is_incoming:
+            # Tax refund: bank goes UP, tax liability goes DOWN
+            debit_acct, credit_acct = "1920", "2600"
+        else:
+            debit_acct, credit_acct = "2600", "1920"
     else:  # interest_expense
         debit_acct, credit_acct = "8050", "1920"
 
@@ -397,19 +438,13 @@ async def _post_fee_or_interest_voucher(
 
     accounts = account_cache
 
-    # Resolve no-VAT type to explicitly mark postings as VAT-exempt
-    no_vat_id = await _resolve_no_vat_type(client)
-    vat_ref = {"id": no_vat_id} if no_vat_id and no_vat_id > 0 else None
-
     postings = [
         {"date": tx_date, "description": description,
             "amountGross": abs(amount), "amountGrossCurrency": abs(amount),
-            "account": {"id": accounts[debit_acct]}, "row": 1,
-            **({"vatType": vat_ref} if vat_ref else {})},
+            "account": {"id": accounts[debit_acct]}, "row": 1},
         {"date": tx_date, "description": description,
             "amountGross": -abs(amount), "amountGrossCurrency": -abs(amount),
-            "account": {"id": accounts[credit_acct]}, "row": 2,
-            **({"vatType": vat_ref} if vat_ref else {})},
+            "account": {"id": accounts[credit_acct]}, "row": 2},
     ]
     voucher = {"date": tx_date, "description": description, "postings": postings}
 
@@ -520,27 +555,70 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                     logger.error("Supplier payment failed on invoice %d: %s", si_id, result)
                     results["errors"].append({"description": desc, "error": str(result)})
             else:
+                # No formal supplier invoice — post fallback voucher: Debit 2400 / Credit 1920
                 supplier_name = _extract_name(desc, _SUPPLIER_PREFIXES)
-                logger.warning(
-                    "No matching supplier invoice for payment %.2f (%s)",
-                    amount_out,
-                    supplier_name,
+                logger.info(
+                    "No supplier invoice for %.2f (%s) — posting voucher fallback",
+                    amount_out, supplier_name,
                 )
-                results["skipped"].append({
-                    "description": desc,
-                    "amount": amount_out,
-                    "reason": "no matching supplier invoice",
-                })
+                acct_2400 = fee_account_cache.get("2400")
+                acct_1920 = fee_account_cache.get("1920")
+                if acct_2400 and acct_1920:
+                    # Resolve supplier by name — 2400 (AP) may require supplier ref
+                    supplier_id = await _resolve_supplier_by_name(supplier_name, client)
+                    ap_posting = {
+                        "date": tx_date, "description": desc,
+                        "amountGross": abs(amount_out), "amountGrossCurrency": abs(amount_out),
+                        "account": {"id": acct_2400}, "row": 1,
+                    }
+                    if supplier_id:
+                        ap_posting["supplier"] = {"id": supplier_id}
+                    postings = [
+                        ap_posting,
+                        {"date": tx_date, "description": desc,
+                         "amountGross": -abs(amount_out), "amountGrossCurrency": -abs(amount_out),
+                         "account": {"id": acct_1920}, "row": 2},
+                    ]
+                    voucher = {"date": tx_date, "description": desc, "postings": postings}
+                    result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
+                    vid = result.get("value", {}).get("id")
+                    if vid:
+                        logger.info("Supplier fallback voucher id=%d for %s", vid, supplier_name)
+                        results["payments_registered"].append(
+                            {"type": "supplier_voucher", "voucherId": vid, "amount": amount_out, "date": tx_date})
+                    else:
+                        logger.error("Supplier fallback voucher failed: %s", result)
+                        results["errors"].append({"description": desc, "error": str(result)})
+                else:
+                    logger.warning("Cannot post supplier fallback — missing account 2400 or 1920")
+                    results["skipped"].append({
+                        "description": desc, "amount": amount_out,
+                        "reason": "no matching supplier invoice and missing fallback accounts",
+                    })
 
-        # ----- BANK FEE / INTEREST -----
-        elif tx_type in ("fee", "interest_income", "interest_expense"):
+        # ----- BANK FEE / INTEREST / TAX PAYMENT -----
+        elif tx_type in ("fee", "interest_income", "interest_expense", "tax_payment"):
+            is_incoming = False
             if tx_type == "interest_income":
                 amount = amount_in
             elif tx_type == "interest_expense":
                 amount = amount_out
+            elif tx_type == "tax_payment":
+                if amount_out > 0:
+                    amount = amount_out
+                else:
+                    amount = amount_in
+                    is_incoming = True  # tax refund: bank up, liability down
             else:  # fee
-                amount = amount_out if amount_out > 0 else amount_in
-            success = await _post_fee_or_interest_voucher(amount, tx_date, desc, tx_type, client, fee_account_cache)
+                if amount_out > 0:
+                    amount = amount_out
+                else:
+                    amount = amount_in
+                    is_incoming = True  # fee in "Inn" column = refund, swap debit/credit
+            success = await _post_fee_or_interest_voucher(
+                amount, tx_date, desc, tx_type, client, fee_account_cache,
+                is_incoming=is_incoming,
+            )
             if success:
                 results["fees_posted"].append(
                     {"type": tx_type, "description": desc, "amount": amount, "date": tx_date})

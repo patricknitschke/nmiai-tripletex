@@ -153,6 +153,19 @@ async def _get_vat_types(client: TripletexClient, direction: str | None = None) 
         params["typeOfVat"] = "INCOMING" if direction == "input" else "OUTGOING"
     result = await client.get("/ledger/vatType", params=params)
     values = result.get("values", [])
+
+    # B-VAT fix: if filtered fetch returned empty (API 500 or no results),
+    # fallback to unfiltered fetch before caching empty list
+    if not values and direction is not None:
+        logger.warning("Filtered vatType fetch (%s) returned empty — falling back to unfiltered", direction)
+        all_types = await _get_vat_types(client, direction=None)
+        type_filter = "INCOMING" if direction == "input" else "OUTGOING"
+        values = [vt for vt in all_types if vt.get("typeOfVat") == type_filter]
+
+    if not values and "error" in result:
+        logger.warning("vatType fetch failed (%s), NOT caching empty result", result.get("error", ""))
+        return []
+
     setattr(client, cache_key, values)
     return values
 
@@ -207,7 +220,17 @@ async def _resolve_vat_type(client: TripletexClient, rate: float, direction: str
             logger.info("Resolved %s VAT type: %.1f%% -> id=%d (%s)", direction, rate, vt["id"], vt.get("name"))
             return vt["id"]
 
-    logger.warning("Could not find VAT type for %.1f%% (%s)", rate, direction)
+    # B-VAT fix: fallback to unfiltered vat types and match by rate + typeOfVat
+    logger.warning("Filtered VAT type lookup failed for %.1f%% (%s) — trying unfiltered", rate, direction)
+    all_types = await _get_vat_types(client, direction=None)
+    type_filter = "INCOMING" if direction == "input" else "OUTGOING"
+    for vt in all_types:
+        pct = vt.get("percentage", 0)
+        if abs(pct - rate) < 0.01 and vt.get("typeOfVat") == type_filter:
+            logger.info("Resolved %s VAT type (unfiltered fallback): %.1f%% -> id=%d (%s)", direction, rate, vt["id"], vt.get("name"))
+            return vt["id"]
+
+    logger.warning("Could not find VAT type for %.1f%% (%s) even in unfiltered list", rate, direction)
     return None
 
 
@@ -262,10 +285,11 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     if expense_account:
         account_numbers.add(str(expense_account))
 
-    supplier_id, (account_map, unresolved_accounts), vat_type_id = await asyncio.gather(
+    supplier_id, (account_map, unresolved_accounts), vat_type_id, no_vat_type_id = await asyncio.gather(
         _resolve_supplier(data, client),
         _ensure_accounts_exist(client, account_numbers),
         _resolve_vat_type(client, vat_rate, "input"),
+        _resolve_no_vat_type(client),
     )
 
     if not data.get("allowDuplicate") and invoice_number:
@@ -327,7 +351,7 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
 
     # Row 2: Credit AP account 2400 with negative gross + supplier ref
     # Explicitly set no-VAT type to prevent Tripletex auto-applying default VAT on 2400
-    no_vat_type_id = await _resolve_no_vat_type(client)
+    # B71: no_vat_type_id already resolved in parallel gather above
     ap_posting = {
         "date": voucher_date,
         "description": description,
@@ -366,32 +390,56 @@ def _split_into_balanced_pairs(postings_data: list) -> list[list[dict]]:
 
 
 async def _resolve_no_vat_type(client: TripletexClient) -> int | None:
-    """Find the 'no VAT' / exempt (0%) VAT type. Cached per client instance."""
-    # Cache on the client object to avoid repeated fetches
+    """Find the universal 'no VAT' type (MVA-kode 0: Ingen avgiftsbehandling).
+
+    B-VAT fix: Account 2400 is locked to MVA-kode 0. We must NOT return kode 5
+    ("Ingen utgående avgift") or any other 0% type. Priority order:
+    1. number==0 (the actual MVA-kode 0)
+    2. "ingen avgiftsbehandling" in name (exact canonical name)
+    3. Any 0% type that is NOT an OUTGOING/INCOMING specific type
+    4. Last resort: any 0% type
+    """
     cached = getattr(client, "_no_vat_type_id", None)
     if cached is not None:
         return cached if cached != -1 else None
 
     vat_types = await _get_vat_types(client)
 
-    # Prefer explicit 0% / exempt types
+    # Priority 1: MVA-kode 0 by number field
+    # B70 fix: number is a string from the API ("0"), not int
     for vt in vat_types:
-        pct = vt.get("percentage", -1)
-        name = vt.get("name", "").lower()
-        if pct == 0 and ("fri" in name or "exempt" in name or "ingen" in name or "utenfor" in name or "0" in name):
-            logger.info("Resolved no-VAT type: id=%d (%s)", vt["id"], vt.get("name"))
+        if str(vt.get("number", "")).strip() == "0" and vt.get("percentage", -1) == 0:
+            logger.info("Resolved no-VAT type by number=0: id=%d (%s)", vt["id"], vt.get("name"))
             client._no_vat_type_id = vt["id"]
             return vt["id"]
 
-    # Fallback: any 0% type
+    # Priority 2: exact canonical name "ingen avgiftsbehandling"
     for vt in vat_types:
         if vt.get("percentage", -1) == 0:
-            logger.info("Resolved no-VAT type (fallback 0%%): id=%d (%s)", vt["id"], vt.get("name"))
+            name = vt.get("name", "").lower()
+            if "ingen avgiftsbehandling" in name:
+                logger.info("Resolved no-VAT type by name match: id=%d (%s)", vt["id"], vt.get("name"))
+                client._no_vat_type_id = vt["id"]
+                return vt["id"]
+
+    # Priority 3: 0% type that is NOT direction-specific (not INCOMING/OUTGOING)
+    for vt in vat_types:
+        if vt.get("percentage", -1) == 0:
+            type_of_vat = vt.get("typeOfVat", "")
+            if type_of_vat not in ("INCOMING", "OUTGOING"):
+                logger.info("Resolved no-VAT type (non-directional 0%%): id=%d (%s)", vt["id"], vt.get("name"))
+                client._no_vat_type_id = vt["id"]
+                return vt["id"]
+
+    # Priority 4: any 0% type as last resort
+    for vt in vat_types:
+        if vt.get("percentage", -1) == 0:
+            logger.info("Resolved no-VAT type (last resort 0%%): id=%d (%s)", vt["id"], vt.get("name"))
             client._no_vat_type_id = vt["id"]
             return vt["id"]
 
     logger.warning("Could not find any 0%% VAT type")
-    client._no_vat_type_id = -1  # Sentinel: looked up but not found
+    client._no_vat_type_id = -1
     return None
 
 

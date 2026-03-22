@@ -243,11 +243,11 @@ def make_department(id=100, name="General"):
 def make_vat_types():
     """Standard Norwegian VAT types."""
     return [
-        {"id": 3, "name": "Utgående mva, høy sats", "percentage": 25},
-        {"id": 31, "name": "Utgående mva, middels sats", "percentage": 15},
-        {"id": 5, "name": "Ingen utgående avgift", "percentage": 0},
-        {"id": 21, "name": "Inngående mva, høy sats", "percentage": 25},
-        {"id": 6, "name": "Ingen avgift, fritatt", "percentage": 0},
+        {"id": 3, "name": "Utgående mva, høy sats", "number": "3", "percentage": 25, "typeOfVat": "OUTGOING"},
+        {"id": 31, "name": "Utgående mva, middels sats", "number": "31", "percentage": 15, "typeOfVat": "OUTGOING"},
+        {"id": 5, "name": "Ingen utgående avgift", "number": "5", "percentage": 0, "typeOfVat": "OUTGOING"},
+        {"id": 21, "name": "Inngående mva, høy sats", "number": "21", "percentage": 25, "typeOfVat": "INCOMING"},
+        {"id": 6, "name": "Ingen avgiftsbehandling", "number": "0", "percentage": 0},
     ]
 
 
