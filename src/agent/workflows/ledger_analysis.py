@@ -12,6 +12,57 @@ from ..tripletex import TripletexClient
 logger = logging.getLogger("agent.workflows.ledger_analysis")
 
 
+def _as_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _iter_dict_nodes(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _iter_dict_nodes(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_dict_nodes(item)
+
+
+def _extract_debit_credit_totals(balance_sheet_result: dict) -> tuple[float | None, float | None, str]:
+    """Best-effort totals parser for /balanceSheet response variants."""
+    root = balance_sheet_result.get("value") if isinstance(balance_sheet_result.get("value"), dict) else balance_sheet_result
+
+    # Variant A: explicit debit/credit totals are present.
+    debit_keys = ("totalDebit", "debitTotal", "sumDebit", "debit")
+    credit_keys = ("totalCredit", "creditTotal", "sumCredit", "credit")
+    for d_key in debit_keys:
+        for c_key in credit_keys:
+            debit = _as_float(root.get(d_key)) if isinstance(root, dict) else None
+            credit = _as_float(root.get(c_key)) if isinstance(root, dict) else None
+            if debit is not None and credit is not None:
+                return debit, credit, f"explicit:{d_key}/{c_key}"
+
+    # Variant B: tree/list of lines with signed balances only.
+    candidate_amount_keys = ("amount", "balance", "sum", "closingBalance", "amountTotal")
+    signed_values: list[float] = []
+    for node in _iter_dict_nodes(root):
+        if not isinstance(node, dict):
+            continue
+        for key in candidate_amount_keys:
+            value = _as_float(node.get(key))
+            if value is not None:
+                signed_values.append(value)
+                break
+
+    if not signed_values:
+        return None, None, "unparsed"
+
+    debit_total = sum(v for v in signed_values if v > 0)
+    credit_total = -sum(v for v in signed_values if v < 0)
+    return debit_total, credit_total, "derived:signed-lines"
+
+
 async def analyze_ledger(data: dict, client: TripletexClient) -> dict:
     """Analyze ledger postings for a date range and detect common errors.
 
@@ -316,6 +367,60 @@ async def compare_expenses(data: dict, client: TripletexClient) -> dict:
                 f"({date_from} to {date_to} excl). Months found: {months_str}. "
                 f"Top {len(top_increases)} accounts by largest month-over-month increase. "
                 f"Use top_increases[].name for project/account names."
+            ),
+        }
+    }
+
+
+async def verify_trial_balance(data: dict, client: TripletexClient) -> dict:
+    """Verify whether the trial balance is in equilibrium at a given snapshot date.
+
+    Uses GET /balanceSheet and parses the response into debit/credit totals.
+    This workflow is intended for month-end/year-end control steps.
+
+    Input data fields:
+    - dateTo: snapshot date (YYYY-MM-DD). Tripletex dateTo is EXCLUSIVE.
+    """
+    date_to = data.get("dateTo")
+    if not date_to:
+        tomorrow = date.today() + timedelta(days=1)
+        date_to = tomorrow.isoformat()
+
+    params = {"dateTo": date_to}
+    if data.get("dateFrom"):
+        logger.warning("verify_trial_balance ignores dateFrom to enforce snapshot semantics")
+
+    result = await client.get("/balanceSheet", params=params)
+    if result.get("error"):
+        return {
+            "error": "Failed to fetch balance sheet",
+            "details": result,
+            "dateTo": date_to,
+        }
+
+    debit_total, credit_total, parse_source = _extract_debit_credit_totals(result)
+    if debit_total is None or credit_total is None:
+        return {
+            "error": "Could not parse debit/credit totals from /balanceSheet response",
+            "dateTo": date_to,
+            "parseSource": parse_source,
+            "details": result,
+        }
+
+    difference = round(debit_total - credit_total, 2)
+    balanced = abs(difference) <= 0.01
+
+    return {
+        "value": {
+            "dateTo": date_to,
+            "balanced": balanced,
+            "debitTotal": round(debit_total, 2),
+            "creditTotal": round(credit_total, 2),
+            "difference": difference,
+            "parseSource": parse_source,
+            "summary": (
+                f"Trial balance {'is balanced' if balanced else 'is NOT balanced'} "
+                f"at {date_to}: debit={round(debit_total, 2)}, credit={round(credit_total, 2)}, diff={difference}."
             ),
         }
     }

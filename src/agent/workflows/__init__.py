@@ -15,7 +15,7 @@ from .timesheet import register_time
 from .employment import register_employment
 from .bank_reconciliation import reconcile_bank_statement
 from .expense import register_expense
-from .ledger_analysis import analyze_ledger, compare_expenses
+from .ledger_analysis import analyze_ledger, compare_expenses, verify_trial_balance
 from .payroll import register_payroll
 from .fx_payment import register_fx_payment
 from .project_invoice import create_project_invoice
@@ -49,6 +49,7 @@ WORKFLOWS: dict[str, callable] = {
     "register_payroll": register_payroll,
     "analyze_ledger": analyze_ledger,
     "compare_expenses": compare_expenses,
+    "verify_trial_balance": verify_trial_balance,
     "register_fx_payment": register_fx_payment,
     "create_project_invoice": create_project_invoice,
     "create_dimension_voucher": create_dimension_voucher,

@@ -13,6 +13,7 @@ from src.agent.workflows.product import create_product
 from src.agent.workflows.project_invoice import create_project_invoice
 from src.agent.workflows.voucher import create_supplier_invoice, create_voucher, _split_into_balanced_pairs
 from src.agent.workflows.expense import register_expense
+from src.agent.workflows.ledger_analysis import verify_trial_balance
 
 from .conftest import (
     make_employee, make_customer, make_invoice, make_account,
@@ -833,20 +834,12 @@ class TestCreateVoucher:
 
         mock_client.assert_called("POST", "/ledger/voucher")
 
-    async def test_creates_missing_accounts_before_posting_voucher(self, mock_client):
-        """Missing accounts should be created before voucher POST to avoid 422."""
+    async def test_fails_fast_when_accounts_are_missing(self, mock_client):
+        """Missing accounts must fail fast; workflow should not auto-create chart accounts."""
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
-        mock_client.when_get("/ledger/account", [
-            {"values": []},
-            {"values": [make_account(id=70, number=6030), make_account(id=71, number=1209)]},
-        ])
-        mock_client.when_post("/ledger/account", [
-            {"value": {"id": 70, "number": 6030}},
-            {"value": {"id": 71, "number": 1209}},
-        ])
-        mock_client.when_post("/ledger/voucher", {"value": {"id": 1}})
+        mock_client.when_get("/ledger/account", {"values": [make_account(id=70, number=6030)]})
 
-        await create_voucher({
+        result = await create_voucher({
             "description": "Linear depreciation",
             "postings": [
                 {"account": 6030, "amount": 1000},
@@ -854,25 +847,10 @@ class TestCreateVoucher:
             ],
         }, mock_client)
 
-        account_posts = mock_client.get_calls("POST", "/ledger/account")
-        assert len(account_posts) == 2
-        assert account_posts[0]["payload"]["number"] == 1209
-        assert account_posts[1]["payload"]["number"] == 6030
-
-        voucher_call = mock_client.get_calls("POST", "/ledger/voucher")[0]
-        assert voucher_call["payload"]["postings"][0]["account"]["id"] == 70
-        assert voucher_call["payload"]["postings"][1]["account"]["id"] == 71
-
-        post_order = [
-            (c["method"], c["endpoint"])
-            for c in mock_client.calls
-            if c["method"] == "POST" and c["endpoint"] in {"/ledger/account", "/ledger/voucher"}
-        ]
-        assert post_order == [
-            ("POST", "/ledger/account"),
-            ("POST", "/ledger/account"),
-            ("POST", "/ledger/voucher"),
-        ]
+        assert result["error"] == "Missing ledger account(s): 1209"
+        mock_client.assert_not_called("POST", "/ledger/account")
+        mock_client.assert_not_called("POST", "/ledger/account/list")
+        mock_client.assert_not_called("POST", "/ledger/voucher")
 
     async def test_rejects_postings_without_amount(self, mock_client):
         """Workflow must fail fast when a posting amount is missing."""
@@ -886,6 +864,55 @@ class TestCreateVoucher:
 
         assert result["error"] == "Missing amount on posting row(s): 1"
         mock_client.assert_not_called("POST", "/ledger/voucher")
+
+    async def test_does_not_auto_create_when_multiple_accounts_missing(self, mock_client):
+        """Workflow should not auto-create accounts, even when all are missing."""
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+        mock_client.when_get("/ledger/account", {"values": []})
+
+        result = await create_voucher({
+            "description": "Single missing account",
+            "postings": [
+                {"account": 6030, "amount": 1000},
+                {"account": 1209, "amount": -1000},
+            ],
+        }, mock_client)
+
+        assert result["error"] == "Missing ledger account(s): 1209, 6030"
+        mock_client.assert_not_called("POST", "/ledger/account")
+        mock_client.assert_not_called("POST", "/ledger/account/list")
+        mock_client.assert_not_called("POST", "/ledger/voucher")
+
+
+class TestVerifyTrialBalance:
+
+    async def test_returns_balanced_true_for_equal_totals(self, mock_client):
+        mock_client.when_get("/balanceSheet", {
+            "value": {
+                "totalDebit": 10000,
+                "totalCredit": 10000,
+            }
+        })
+
+        result = await verify_trial_balance({"dateTo": "2026-04-01"}, mock_client)
+
+        assert "error" not in result
+        assert result["value"]["balanced"] is True
+        assert result["value"]["difference"] == 0
+
+    async def test_returns_balanced_false_for_mismatch(self, mock_client):
+        mock_client.when_get("/balanceSheet", {
+            "value": {
+                "totalDebit": 10000,
+                "totalCredit": 9875,
+            }
+        })
+
+        result = await verify_trial_balance({"dateTo": "2026-04-01"}, mock_client)
+
+        assert "error" not in result
+        assert result["value"]["balanced"] is False
+        assert result["value"]["difference"] == 125
 
 
 # ============================================================

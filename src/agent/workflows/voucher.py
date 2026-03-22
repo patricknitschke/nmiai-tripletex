@@ -11,18 +11,21 @@ async def _resolve_accounts_batch(client: TripletexClient, account_numbers: set[
     if not account_numbers:
         return {}
 
+    requested = {str(n) for n in account_numbers}
     result = await client.get(
         "/ledger/account",
         params={
-            "number": ",".join(sorted(account_numbers)),
-            "count": str(max(len(account_numbers), 1)),
+            "number": ",".join(sorted(requested)),
+            # Account search can return fuzzy/expanded matches; request enough rows and
+            # filter strictly by exact number below.
+            "count": str(max(len(requested) * 10, 100)),
             "fields": "id,number,vatType,vatLocked,ledgerType",
         },
     )
     return {
         str(acc.get("number")): acc
         for acc in result.get("values", [])
-        if acc.get("number") is not None
+        if acc.get("number") is not None and str(acc.get("number")) in requested
     }
 
 
@@ -35,38 +38,18 @@ def _extract_account_numbers(postings_data: list[dict]) -> set[str]:
 
 
 async def _ensure_accounts_exist(client: TripletexClient, account_numbers: set[str]) -> tuple[dict[str, dict], list[str]]:
-    """Resolve accounts once, create missing ones, and verify all are available."""
+    """Resolve accounts once and fail fast on missing accounts.
+
+    Guardrail: manual voucher workflows must not auto-create accounts. Missing
+    chart-of-accounts configuration should be surfaced explicitly.
+    """
     if not account_numbers:
         return {}, []
 
     account_map = await _resolve_accounts_batch(client, account_numbers)
-    missing = sorted(acc for acc in account_numbers if acc not in account_map)
-    created_numbers: list[str] = []
-
-    for acc_num in missing:
-        if not acc_num.isdigit():
-            logger.error("Cannot create account with non-numeric number: %s", acc_num)
-            continue
-
-        create_result = await client.post(
-            "/ledger/account",
-            {
-                "number": int(acc_num),
-                "name": f"Auto-created account {acc_num}",
-            },
-        )
-        created_id = create_result.get("value", {}).get("id")
-        if created_id:
-            logger.info("Created missing account %s (id=%s)", acc_num, created_id)
-            created_numbers.append(acc_num)
-        else:
-            logger.error("Failed to create missing account %s: %s", acc_num, create_result)
-
-    if created_numbers:
-        refreshed = await _resolve_accounts_batch(client, set(created_numbers))
-        account_map.update(refreshed)
-
     unresolved = sorted(acc for acc in account_numbers if acc not in account_map)
+    if unresolved:
+        logger.error("Missing account(s) in chart of accounts: %s", ", ".join(unresolved))
     return account_map, unresolved
 
 
@@ -181,14 +164,14 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     # Resolve supplier
     supplier_id = await _resolve_supplier(data, client)
 
-    # Resolve expense + AP account in one API call, create missing accounts, then re-check.
+    # Resolve expense + AP account in one API call; fail fast if any are missing.
     account_numbers = {"2400"}
     if expense_account:
         account_numbers.add(str(expense_account))
     account_map, unresolved_accounts = await _ensure_accounts_exist(client, account_numbers)
     if unresolved_accounts:
         return {
-            "error": f"Could not resolve/create ledger accounts: {', '.join(unresolved_accounts)}"
+            "error": f"Missing ledger account(s): {', '.join(unresolved_accounts)}"
         }
 
     expense_account_id = None
@@ -430,12 +413,12 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
         rows = ", ".join(str(r) for r in missing_amount_rows)
         return {"error": f"Missing amount on posting row(s): {rows}"}
 
-    # Pre-validate all accounts in one GET and create missing accounts before voucher POST.
+    # Pre-validate all accounts in one GET and fail fast on unresolved account numbers.
     account_numbers = _extract_account_numbers(postings_data)
     account_map, unresolved_accounts = await _ensure_accounts_exist(client, account_numbers)
     if unresolved_accounts:
         return {
-            "error": f"Could not resolve/create ledger accounts: {', '.join(unresolved_accounts)}"
+            "error": f"Missing ledger account(s): {', '.join(unresolved_accounts)}"
         }
 
     # Resolve customer once; _resolve_postings attaches it to CUSTOMER ledger lines.

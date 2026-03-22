@@ -452,6 +452,18 @@ TASK_SCHEMAS: dict[str, dict] = {
             {"name": "topN", "type": "integer", "required": False, "description": "Number of top accounts to return (default: 10)"},
         ],
     },
+    "verify_trial_balance": {
+        "api_endpoint": "GET /balanceSheet",
+        "notes": (
+            "Validates that the trial balance is in equilibrium at a period-end snapshot. "
+            "Use this for month-end/year-end checks instead of manually interpreting raw /balanceSheet responses. "
+            "Returns balanced=true/false with parsed debit and credit totals. "
+            "IMPORTANT: dateTo is EXCLUSIVE and this check uses snapshot semantics (dateTo only, no dateFrom)."
+        ),
+        "fields": [
+            {"name": "dateTo", "type": "string (YYYY-MM-DD)", "required": True, "description": "Snapshot date EXCLUSIVE. Example: year-end 2025 => 2026-01-01"},
+        ],
+    },
     "register_fx_payment": {
         "api_endpoint": "PUT /invoice/{id}/:payment + POST /ledger/voucher",
         "notes": (

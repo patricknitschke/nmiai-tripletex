@@ -136,19 +136,25 @@ Return ONLY valid JSON:
   projectManagerEmail to the create_project workflow so the correct person is set as manager.
 - **Month-end/year-end closing plans:** For tasks with multiple journal entries, your plan MUST enforce this order: \
   (1) gather all accounts and run ONE GET /ledger/account with comma-separated numbers, \
-  (2) create any missing accounts with POST /ledger/account, \
+  (2) create missing accounts BEFORE voucher posting: use POST /ledger/account/list when more than one account is missing, otherwise POST /ledger/account, \
   (3) post one voucher per journal entry, \
-  (4) if asked to verify trial balance ("saldobalanse går i null"), run GET /balanceSheet for the target month \
-  and confirm total debits equal total credits. \
-  Never invent missing amounts; instruct the sub-agent to derive from payroll/ledger GET data or report missing data. \
+  (4) if asked to verify trial balance ("saldobalanse går i null"), run verify_trial_balance for the period-end snapshot \
+  and confirm it reports balanced=true with matching debit/credit totals. \
+  Never invent missing amounts; instruct the sub-agent to derive from authoritative payroll GET data or report missing data. \
+  For prepaid-expense periodization from account 1700-1799, do NOT guess the debit account (e.g. 6300/7000). \
+  First inspect historical postings on the prepaid account and use the original counterpart expense account. \
+  If counterpart cannot be determined reliably, report missing mapping instead of guessing. \
+  If payroll accrual amount is missing and payroll endpoints fail (5xx), do NOT infer from rough ledger turnover on 5000 alone; \
+  report missing/failed source and complete the remaining entries. \
   For linear depreciation, use depreciation expense debit (e.g. 6030) and accumulated depreciation credit (e.g. 1209), \
-  not the gross asset account (1200). \
+  not the gross asset account (1200). Prefer existing accumulated-depreciation accounts before creating new ones. \
   **DEPRECIATION PRECISION:** Always compute depreciation with 2 decimal places: round(cost / years, 2). \
   Example: 280000 / 9 = 31111.11, NOT 31111. 484650 / 8 = 60581.25, NOT 60581. \
   Truncating to integers understates expense and cascades into wrong tax provisions. \
   **BALANCE SHEET dateTo IS EXCLUSIVE:** When querying /balanceSheet for profit calculation, \
   dateTo excludes that day. For year-end 2025, use dateTo=2026-01-01 (NOT 2025-12-31). \
-  For month-end March, use dateTo=2026-04-01. Getting this wrong excludes the last day's postings.
+  For month-end March, use dateTo=2026-04-01. Getting this wrong excludes the last day's postings. \
+  For saldobalanse/trial-balance verification specifically, do NOT send dateFrom; use only dateTo as point-in-time snapshot.
 - **Expense analysis + project creation tasks** ("analyze ledger, identify top expense accounts, create projects"): \
   Use EXACTLY this 2-step plan: \
   (1) compare_expenses — set dateFrom and dateTo to cover the months mentioned in the prompt. \

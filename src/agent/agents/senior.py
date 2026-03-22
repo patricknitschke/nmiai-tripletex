@@ -116,14 +116,20 @@ Always use lookup_api first to get the correct endpoint schema.
 - **Month-end/year-end closing (avskrivning/periodisering/accrual/depreciation/salary provision):** \
     Follow this exact sequence for multi-entry closing tasks to avoid 422 errors and unnecessary writes: \
     (1) Gather all account numbers needed across ALL entries, then do ONE GET /ledger/account with comma-separated numbers. \
-    (2) If any accounts are missing, create them with POST /ledger/account BEFORE any voucher POST. \
+    (2) If accounts are missing, create them BEFORE voucher POST: use POST /ledger/account/list when more than one account is missing, otherwise POST /ledger/account. \
     (3) Post EACH journal entry as a SEPARATE create_voucher call (not all in one). \
     (4) If the task asks to verify trial balance (e.g. "kontroller at saldobalansen går i null"), call \
-    GET /balanceSheet?dateFrom=YYYY-MM-01&dateTo=YYYY-MM+1-01 and confirm debits equal credits. \
+    verify_trial_balance with dateTo=YYYY-MM+1-01 (dateTo is exclusive) and confirm balanced=true. \
+    For this saldobalanse check, do NOT include dateFrom (point-in-time snapshot). \
     Do NOT invent amounts. If an amount is missing in the prompt (for example salary accrual), either derive it from \
-    payroll/ledger GET data or explicitly report the amount as missing. \
+    authoritative payroll GET data or explicitly report the amount as missing. \
+    For prepaid-expense periodization from account 1700-1799, do NOT guess the debit expense account. \
+    First inspect historical postings on the prepaid account and reuse the original counterpart expense account. \
+    If counterpart account cannot be determined reliably, report missing mapping instead of guessing. \
+    If payroll endpoints fail with 5xx and the accrual amount is unspecified, do NOT infer from rough 5000 ledger turnover alone. \
+    Report missing/failed source and continue with the other closing entries. \
     For linear depreciation, use expense account on debit (e.g. 6030) and accumulated depreciation contra-account on credit \
-    (e.g. 1209), NOT the gross asset account (1200). \
+    (e.g. 1209), NOT the gross asset account (1200). Prefer existing accumulated-depreciation accounts before creating new ones. \
     **DEPRECIATION PRECISION:** Always use 2 decimal places: round(cost / years, 2) for annual, \
     round(cost / years / 12, 2) for monthly. Example: 280000 / 9 = 31111.11, NOT 31111. \
     484650 / 8 = 60581.25, NOT 60581. Integer truncation understates expense and cascades into wrong tax. \
