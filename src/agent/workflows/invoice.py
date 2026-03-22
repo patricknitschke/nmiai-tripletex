@@ -20,27 +20,35 @@ async def _ensure_bank_account(client: TripletexClient) -> None:
     result = await client.get("/ledger/account", params={
         "number": "1920",
         "count": "1",
-        "fields": "id,version,name,bankAccountNumber",
+        "fields": "id,version,name,bankAccountNumber,isBankAccount",
     })
     accounts = result.get("values", [])
     desired_bank_number = "86011117947"
 
-    if accounts and accounts[0].get("bankAccountNumber") == desired_bank_number:
-        logger.info("Bank account 1920 already matches desired state → skipping PUT")
-        client._bank_account_ready = True
-        return
+    if accounts:
+        bank_number = str(accounts[0].get("bankAccountNumber") or "").strip()
+        is_bank_account = accounts[0].get("isBankAccount")
+
+        # Write-efficiency: if 1920 is already configured with a bank account number,
+        # do not force an update to a hardcoded number.
+        if bank_number and is_bank_account is not False:
+            logger.info("Bank account 1920 already usable → skipping PUT")
+            client._bank_account_ready = True
+            return
 
     # Create or update account 1920 with the bank account number
     if accounts:
-        # Account exists but bank number missing or different — update it
+        # Account exists but lacks usable bank setup — patch it once.
         account_id = accounts[0]["id"]
-        logger.info("Updating account 1920 (id=%d) with bank account number", account_id)
+        existing_bank_number = str(accounts[0].get("bankAccountNumber") or "").strip()
+        bank_number_to_use = existing_bank_number or desired_bank_number
+        logger.info("Updating account 1920 (id=%d) with bank account details", account_id)
         write_result = await client.put(f"/ledger/account/{account_id}", {
             "id": account_id,
             "version": accounts[0]["version"],
             "name": accounts[0].get("name", "Bank"),
             "number": 1920,
-            "bankAccountNumber": desired_bank_number,
+            "bankAccountNumber": bank_number_to_use,
             "isBankAccount": True,
         })
     else:

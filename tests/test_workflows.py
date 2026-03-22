@@ -9,6 +9,7 @@ import pytest
 from src.agent.workflows.payroll import register_payroll
 from src.agent.workflows.customer import create_customer
 from src.agent.workflows.payment import register_payment
+from src.agent.workflows.invoice import create_invoice
 from src.agent.workflows.product import create_product
 from src.agent.workflows.project_invoice import create_project_invoice
 from src.agent.workflows.voucher import create_supplier_invoice, create_voucher, _split_into_balanced_pairs
@@ -465,18 +466,10 @@ class TestRegisterPayment:
         assert put_calls[0]["params"]["paidAmount"] == "1200"
         assert put_calls[0]["params"]["paidAmountCurrency"] == "100"
 
-    async def test_creates_invoice_when_not_found(self, mock_client):
-        """If no invoice exists, should create one then pay it."""
+    async def test_returns_error_when_invoice_not_found(self, mock_client):
+        """If no invoice exists, payment workflow should fail instead of creating a fake invoice."""
         mock_client.when_get("/customer", {"values": []})
         mock_client.when_get("/invoice", {"values": []})
-        # Invoice creation path (via create_invoice workflow)
-        mock_client.when_get("/ledger/account", {"values": [make_account(id=1, number=1920)]})
-        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
-        mock_client.when_post("/customer", {"value": make_customer(id=1)})
-        mock_client.when_post("/order", {"value": {"id": 1}})
-        mock_client.when_put("/order/1/:invoice", {"value": make_invoice(id=50, amount=10000)})
-        mock_client.when_get("/invoice/paymentType", {"values": [make_payment_type(id=1)]})
-        mock_client.when_put("/invoice/50/:payment", {"value": {"id": 50}})
 
         result = await register_payment({
             "customerName": "New Customer",
@@ -485,8 +478,65 @@ class TestRegisterPayment:
             "paidAmount": 10000,
         }, mock_client)
 
-        # Should have created an invoice first
+        assert result["error"] == (
+            "Could not find existing invoice for payment. "
+            "Check customer org number, invoice description, or provide invoiceId/invoiceNumber."
+        )
+        mock_client.assert_not_called("POST", "/order")
+
+
+# ============================================================
+# create_invoice — bank account write efficiency guardrails
+# ============================================================
+
+class TestCreateInvoice:
+
+    async def test_skips_account_put_when_1920_already_usable(self, mock_client):
+        mock_client.when_get("/ledger/account", {
+            "values": [{
+                **make_account(id=1, number=1920),
+                "bankAccountNumber": "12345678901",
+                "isBankAccount": True,
+            }]
+        })
+        mock_client.when_get("/customer", {"values": [make_customer(id=10, name="Existing AS")]})
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+        mock_client.when_post("/order", {"value": {"id": 11}})
+        mock_client.when_put("/order/11/:invoice", {"value": make_invoice(id=22, amount=12500)})
+        mock_client.when_get("/invoice/22", {"value": {"id": 22, "amount": 12500, "orderLines": [{}]}})
+
+        await create_invoice({
+            "customerName": "Existing AS",
+            "orderLines": [{"description": "Consulting", "count": 1, "unitPrice": 10000}],
+            "sendToCustomer": True,
+        }, mock_client)
+
+        mock_client.assert_not_called("PUT", "/ledger/account/")
         mock_client.assert_called("POST", "/order")
+        mock_client.assert_called("PUT", "/order/11/:invoice")
+
+    async def test_updates_account_when_1920_missing_bank_number(self, mock_client):
+        mock_client.when_get("/ledger/account", {
+            "values": [{
+                **make_account(id=1, number=1920),
+                "bankAccountNumber": "",
+                "isBankAccount": True,
+            }]
+        })
+        mock_client.when_put("/ledger/account/1", {"value": {"id": 1}})
+        mock_client.when_get("/customer", {"values": [make_customer(id=10, name="Existing AS")]})
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+        mock_client.when_post("/order", {"value": {"id": 12}})
+        mock_client.when_put("/order/12/:invoice", {"value": make_invoice(id=23, amount=12500)})
+        mock_client.when_get("/invoice/23", {"value": {"id": 23, "amount": 12500, "orderLines": [{}]}})
+
+        await create_invoice({
+            "customerName": "Existing AS",
+            "orderLines": [{"description": "Consulting", "count": 1, "unitPrice": 10000}],
+            "sendToCustomer": True,
+        }, mock_client)
+
+        mock_client.assert_called("PUT", "/ledger/account/1")
 
 
 # ============================================================
