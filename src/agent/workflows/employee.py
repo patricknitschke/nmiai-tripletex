@@ -164,16 +164,11 @@ async def create_employee(data: dict, client: TripletexClient) -> dict:
 
 
 async def _grant_admin_entitlements(employee_id: int, client: TripletexClient) -> None:
-    """Grant ALL_PRIVILEGES to an employee via the entitlements endpoint.
+    """Grant admin entitlements to an employee.
 
-    NOTE: PUT /employee/entitlement/:grantEntitlementsByTemplate is a BETA endpoint — subject to change.
+    NOTE: PUT /employee/entitlement/:grantEntitlementsByTemplate is a BETA endpoint
+    and CANNOT be used in competition environments. We set userType=EXTENDED on the
+    employee instead, which is the non-BETA way to grant elevated access.
     """
-    logger.info("Granting ALL_PRIVILEGES to employee %d", employee_id)
-    ent_result = await client.put(
-        "/employee/entitlement/:grantEntitlementsByTemplate",
-        params={"employeeId": str(employee_id), "template": "ALL_PRIVILEGES"},
-    )
-    if ent_result.get("error") or (isinstance(ent_result.get("status"), int) and ent_result["status"] >= 400):
-        logger.warning("Entitlement grant failed for employee %d: %s", employee_id, ent_result)
-    else:
-        logger.info("Admin entitlements granted to employee %d", employee_id)
+    # BETA endpoint skipped — userType=EXTENDED is set during employee creation/update
+    logger.info("Admin entitlements: employee %d has userType=EXTENDED (BETA entitlement endpoint skipped)", employee_id)

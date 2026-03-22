@@ -131,15 +131,14 @@ Always use lookup_api first to get the correct endpoint schema.
     For year-end 2025 profit, use dateFrom=2025-01-01&dateTo=2026-01-01 (NOT dateTo=2025-12-31). \
     For month-end March, use dateTo=2026-04-01. This is the #1 cause of wrong tax provisions.
 - **Ledger error correction (Hauptbuch/grand livre/livro razão):** Use analyze_ledger first, then fix each error: \
-  (1) Wrong account → create_voucher: debit correct account, credit wrong account (or vice versa). \
-  (2) Duplicate voucher → create_voucher: reverse the duplicate (negate both postings). \
-  (3) Missing VAT line (fehlende MwSt/MVA manquante) → TWO steps: first create_voucher to REVERSE the original \
-  no-VAT posting (credit the expense account, debit bank 1920), then register_expense with the FULL amount \
-  including VAT (amountInclVat = amount × 1.25 for 25% VAT) on the same expense account. This makes Tripletex \
-  auto-generate the 2710 VAT posting. Do NOT try to post directly to account 2710 — it is system-managed. \
-  (4) Wrong amount → create_voucher: reverse the difference (e.g. if 22550 was booked instead of 5150, \
-  reverse 22550-5150=17400 from the expense account back to bank 1920). \
-  Post EACH correction as a SEPARATE create_voucher call.
+    (1) Wrong account → create_voucher: debit correct account, credit wrong account (or vice versa). \
+    (2) Duplicate voucher → create_voucher: reverse the duplicate (negate both postings). \
+    (3) Missing VAT line (fehlende MwSt/MVA manquante) → ONE corrective create_voucher with only the missing delta \
+    (for 25% VAT: debit 2710 by amount×0.25, credit the original balancing account, typically 1920/2400/1500). \
+    Do NOT re-post the full expense and do NOT reverse/re-register if a delta correction is sufficient. \
+    (4) Wrong amount → create_voucher: reverse the difference (e.g. if 22550 was booked instead of 5150, \
+    reverse 22550-5150=17400 from the expense account back to bank 1920). \
+    Post each correction with the minimum number of writes needed.
 - **Time registration dates:** Newly created projects have startDate=today. You CANNOT register hours before \
   the project start date. Use today's date for all time entries on new projects. If you need to register many \
   hours, put them all on today (or split across today and future dates). NEVER use past dates for new projects.
@@ -150,8 +149,8 @@ Always use lookup_api first to get the correct endpoint schema.
 - **Activities in projects:** Pass activityName or projectActivities to create_project / create_projects_batch. \
   Activities are created separately via POST /project/projectActivity after project creation (ensures checkers can detect them).
 - **Expense comparison across months:** Use compare_expenses (not analyze_ledger) when comparing expenses across \
-  months or finding top accounts by amount. It uses GET /resultbudget/company for pre-aggregated monthly totals \
-  — one efficient call instead of fetching raw postings.
+  months or finding top accounts by amount. It uses GET /ledger/posting to fetch actual expense data and \
+  aggregates by account per month — returning top_increases and top_accounts.
 - **Cache resolved IDs:** After resolving an employee, customer, or entity by name/email, REUSE the ID for \
   subsequent calls. Do NOT call GET /employee?email=... repeatedly for the same person. Store the ID and pass it \
   directly (e.g. projectManagerId instead of projectManagerEmail on the 2nd+ call).

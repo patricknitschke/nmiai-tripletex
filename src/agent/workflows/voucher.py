@@ -268,7 +268,12 @@ def _split_into_balanced_pairs(postings_data: list) -> list[list[dict]]:
 
 
 async def _resolve_no_vat_type(client: TripletexClient) -> int | None:
-    """Find the 'no VAT' / exempt (0%) VAT type. Cached after first call."""
+    """Find the 'no VAT' / exempt (0%) VAT type. Cached per client instance."""
+    # Cache on the client object to avoid repeated fetches
+    cached = getattr(client, "_no_vat_type_id", None)
+    if cached is not None:
+        return cached if cached != -1 else None
+
     vat_types = await _get_vat_types(client)
 
     # Prefer explicit 0% / exempt types
@@ -277,15 +282,18 @@ async def _resolve_no_vat_type(client: TripletexClient) -> int | None:
         name = vt.get("name", "").lower()
         if pct == 0 and ("fri" in name or "exempt" in name or "ingen" in name or "utenfor" in name or "0" in name):
             logger.info("Resolved no-VAT type: id=%d (%s)", vt["id"], vt.get("name"))
+            client._no_vat_type_id = vt["id"]
             return vt["id"]
 
     # Fallback: any 0% type
     for vt in vat_types:
         if vt.get("percentage", -1) == 0:
             logger.info("Resolved no-VAT type (fallback 0%%): id=%d (%s)", vt["id"], vt.get("name"))
+            client._no_vat_type_id = vt["id"]
             return vt["id"]
 
     logger.warning("Could not find any 0%% VAT type")
+    client._no_vat_type_id = -1  # Sentinel: looked up but not found
     return None
 
 

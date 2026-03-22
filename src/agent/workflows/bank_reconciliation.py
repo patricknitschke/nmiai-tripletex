@@ -343,55 +343,50 @@ async def _post_supplier_bank_payment(
 ) -> bool:
     """Post direct supplier bank payment as a voucher (fallback).
 
-    3 postings without vatType to avoid systemgenererte conflicts:
-      Debit  <expense> (expense)   amount excl VAT
-      Debit  2710 (input VAT) VAT amount
-      Credit 1920 (bank)      total incl VAT
-    
+    B25v2 pattern — 2 postings with vatType (Tripletex auto-generates VAT on 2710):
+      Debit  <expense> amountGross=total + vatType (e.g. 25% input)
+      Credit 1920 (bank) amountGross=-total
+
     VAT rate and expense account are detected from description.
     """
+    from .voucher import _resolve_vat_type
+
     vat_rate = await _detect_vat_rate(description)
     expense_acct = _detect_expense_account(description)
-    amount_excl = round(amount_incl / (1 + vat_rate / 100), 2)
-    vat_amount = round(amount_incl - amount_excl, 2)
 
-    acct_numbers = [expense_acct, "1920"]
-    if vat_amount > 0:
-        acct_numbers.append("2710")
+    # Batch account lookup — one GET for all accounts
+    acct_numbers = ",".join(sorted({expense_acct, "1920"}))
+    result = await client.get("/ledger/account", params={"number": acct_numbers, "count": "10"})
+    accounts = {str(a.get("number")): a["id"] for a in result.get("values", []) if a.get("id")}
 
-    accounts = {}
-    for num in acct_numbers:
-        result = await client.get("/ledger/account", params={"number": num, "count": "1"})
-        vals = result.get("values", [])
-        if vals:
-            accounts[num] = vals[0]["id"]
-        else:
-            logger.error("Account %s not found", num)
-            return False
+    if expense_acct not in accounts:
+        logger.error("Account %s not found", expense_acct)
+        return False
+    if "1920" not in accounts:
+        logger.error("Account 1920 not found")
+        return False
+
+    # Resolve input VAT type for the B25v2 pattern
+    vat_type_id = await _resolve_vat_type(client, vat_rate, "input")
+
+    expense_posting = {
+        "date": tx_date, "description": f"{supplier_name} (expense)",
+        "amountGross": amount_incl, "account": {"id": accounts[expense_acct]},
+        "row": 1,
+    }
+    if vat_type_id:
+        expense_posting["vatType"] = {"id": vat_type_id}
 
     postings = [
-        {"date": tx_date, "description": f"{supplier_name} (expense)",
-         "amountGross": amount_excl, "account": {"id": accounts[expense_acct]}},
-    ]
-    if vat_amount > 0:
-        postings.append(
-            {"date": tx_date, "description": f"{supplier_name} (input VAT {vat_rate}%)",
-             "amountGross": vat_amount, "account": {"id": accounts["2710"]}},
-        )
-    postings.append(
+        expense_posting,
         {"date": tx_date, "description": f"{supplier_name} (bank)",
-         "amountGross": -amount_incl, "account": {"id": accounts["1920"]}},
-    )
+         "amountGross": -amount_incl, "account": {"id": accounts["1920"]},
+         "row": 2},
+    ]
     voucher = {"date": tx_date, "description": f"Supplier payment: {supplier_name}", "postings": postings}
 
     result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
     vid = result.get("value", {}).get("id")
-    if not vid:
-        # Draft fallback
-        result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "false"})
-        vid = result.get("value", {}).get("id")
-        if vid:
-            await client.put(f"/ledger/voucher/{vid}/:sendToLedger")
 
     if vid:
         logger.info("Supplier bank payment voucher id=%d (acct=%s, VAT=%d%%)", vid, expense_acct, vat_rate)
@@ -417,15 +412,17 @@ async def _post_fee_or_interest_voucher(
     else:  # interest_expense
         debit_acct, credit_acct = "8150", "1920"
 
-    accounts = {}
-    for num in (debit_acct, credit_acct):
-        result = await client.get("/ledger/account", params={"number": num, "count": "1"})
-        vals = result.get("values", [])
-        if vals:
-            accounts[num] = vals[0]["id"]
-        else:
-            logger.error("Account %s not found for %s", num, tx_type)
-            return False
+    # Batch account lookup — one GET for both accounts
+    acct_numbers = ",".join(sorted({debit_acct, credit_acct}))
+    result = await client.get("/ledger/account", params={"number": acct_numbers, "count": "10"})
+    accounts = {str(a.get("number")): a["id"] for a in result.get("values", []) if a.get("id")}
+
+    if debit_acct not in accounts:
+        logger.error("Account %s not found for %s", debit_acct, tx_type)
+        return False
+    if credit_acct not in accounts:
+        logger.error("Account %s not found for %s", credit_acct, tx_type)
+        return False
 
     postings = [
         {"date": tx_date, "description": description,
@@ -437,11 +434,6 @@ async def _post_fee_or_interest_voucher(
 
     result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "true"})
     vid = result.get("value", {}).get("id")
-    if not vid:
-        result = await client.post("/ledger/voucher", voucher, params={"sendToLedger": "false"})
-        vid = result.get("value", {}).get("id")
-        if vid:
-            await client.put(f"/ledger/voucher/{vid}/:sendToLedger")
 
     if vid:
         logger.info("%s voucher id=%d", tx_type.capitalize(), vid)

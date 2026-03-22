@@ -212,7 +212,8 @@ async def _fallback_reminder_invoice(data: dict, client: TripletexClient) -> dic
     """Fallback: create a direct invoice for the reminder fee with 0% VAT.
 
     Norwegian reminder fees (purregebyr) are VAT-exempt = 0%.
-    Uses POST /invoice directly to avoid the order→invoice 2-call path.
+    Uses order→invoice path (POST /order + PUT /order/:invoice) which is
+    the standard Tripletex invoice creation flow.
     The invoice auto-generates AR posting (debit 1500), so no separate voucher needed.
     """
     from .invoice import _ensure_bank_account, _ensure_customer, _lookup_vat_type_by_rate
@@ -241,38 +242,21 @@ async def _fallback_reminder_invoice(data: dict, client: TripletexClient) -> dic
     if vat_id:
         order_line["vatType"] = {"id": vat_id}
 
-    # Try POST /invoice with embedded order (direct invoice creation)
-    invoice_payload = {
-        "invoiceDate": today,
-        "invoiceDueDate": data.get("dueDate", today),
-        "order": {
-            "customer": {"id": customer_id},
-            "orderDate": today,
-            "deliveryDate": today,
-            "orderLines": [order_line],
-        },
-    }
+    # Use order→invoice path (standard Tripletex flow)
+    order_result = await client.post("/order", {
+        "customer": {"id": customer_id},
+        "orderDate": today,
+        "deliveryDate": today,
+        "orderLines": [order_line],
+    })
+    order_id = order_result.get("value", {}).get("id")
+    if not order_id:
+        return {"error": f"Failed to create fallback order: {order_result}"}
 
-    logger.info("Fallback: creating direct reminder invoice for customer %s, amount=%s, VAT=0%%", customer_id, charge_amount)
-    result = await client.post("/invoice", invoice_payload, params={"sendToCustomer": "true"})
-
-    if result.get("error"):
-        # Last resort: use order→invoice path
-        logger.warning("POST /invoice failed: %s — trying order→invoice path", result.get("error"))
-        order_result = await client.post("/order", {
-            "customer": {"id": customer_id},
-            "orderDate": today,
-            "deliveryDate": today,
-            "orderLines": [order_line],
-        })
-        order_id = order_result.get("value", {}).get("id")
-        if not order_id:
-            return {"error": f"Failed to create fallback order: {order_result}"}
-
-        result = await client.put(
-            f"/order/{order_id}/:invoice",
-            params={"invoiceDate": today, "sendToCustomer": "true"},
-        )
+    result = await client.put(
+        f"/order/{order_id}/:invoice",
+        params={"invoiceDate": today, "sendToCustomer": "true"},
+    )
 
     invoice_id = result.get("value", {}).get("id")
     if invoice_id:

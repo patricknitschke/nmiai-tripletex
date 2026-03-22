@@ -64,6 +64,7 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
     - employmentForm: PERMANENT (default), TEMPORARY
     - remunerationType: MONTHLY_WAGE (default), HOURLY_WAGE
     """
+    from src.agent.workflows.payroll import _resolve_or_create_division
     today = date.today().isoformat()
 
     # Step 1: Create the employee (handles department, search-before-create, etc.)
@@ -122,11 +123,9 @@ async def register_employment(data: dict, client: TripletexClient) -> dict:
         "employmentDetails": [details_obj],
     }
     # Link employment to company division (required for salary transactions)
-    div_result = await client.get("/division", params={"count": "1"})
-    divisions = div_result.get("values", [])
-    if divisions:
-        employment_payload["division"] = {"id": divisions[0]["id"]}
-        logger.info("Linking employment to division: id=%d name=%s", divisions[0]["id"], divisions[0].get("name"))
+    division_id = await _resolve_or_create_division(client, employee_result.get("value", {}).get("companyId"))
+    if division_id:
+        employment_payload["division"] = {"id": division_id}
 
     logger.info("Creating employment for employee %d (startDate=%s, STYRK=%s, salary=%s, percentage=%s)",
                 employee_id, start_date, occupation_code, annual_salary, percentage)

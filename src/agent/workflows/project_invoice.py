@@ -12,6 +12,7 @@ from datetime import date, timedelta
 
 from ..tripletex import TripletexClient
 from .invoice import _ensure_bank_account, _lookup_vat_type_by_rate
+from .timesheet import _set_project_hourly_rate
 
 logger = logging.getLogger("agent.workflows.project_invoice")
 
@@ -64,60 +65,6 @@ async def _get_project_activities(project_id: int, client: TripletexClient) -> d
         "count": "100",
     })
     return {a["id"]: a for a in result.get("values", [])}
-
-
-async def _set_project_hourly_rate(project_id: int, rate: float, client: TripletexClient) -> None:
-    """Configure a fixed hourly rate on the project so timesheet entries become chargeable.
-
-    Idempotent: checks existing rates first to avoid duplicate writes (B54).
-    Uses startDate=2020-01-01 so rate covers all historical entries.
-    """
-    rate_start = "2020-01-01"
-    search = await client.get("/project/hourlyRates", params={
-        "projectId": str(project_id),
-        "type": "TYPE_FIXED_HOURLY_RATE",
-        "count": "1",
-        "fields": "id,version,project,startDate,hourlyRateModel,fixedRate,showInProjectOrder",
-    })
-    existing_rates = search.get("values", [])
-
-    if existing_rates:
-        existing = existing_rates[0]
-        existing_rate = existing.get("fixedRate")
-        if (
-            existing.get("hourlyRateModel") == "TYPE_FIXED_HOURLY_RATE"
-            and existing_rate is not None
-            and abs(float(existing_rate) - rate) < 0.01
-            and existing.get("showInProjectOrder") is True
-        ):
-            logger.info("Project %d already has hourly rate %.2f — skipping", project_id, rate)
-            return
-
-        # Update existing rate to match
-        payload = {
-            "id": existing["id"],
-            "version": existing["version"],
-            "project": {"id": project_id},
-            "startDate": existing.get("startDate") or rate_start,
-            "hourlyRateModel": "TYPE_FIXED_HOURLY_RATE",
-            "fixedRate": rate,
-            "showInProjectOrder": True,
-        }
-        result = await client.put(f"/project/hourlyRates/{existing['id']}", payload)
-    else:
-        payload = {
-            "project": {"id": project_id},
-            "startDate": rate_start,
-            "hourlyRateModel": "TYPE_FIXED_HOURLY_RATE",
-            "fixedRate": rate,
-            "showInProjectOrder": True,
-        }
-        result = await client.post("/project/hourlyRates", payload)
-
-    if result.get("value", {}).get("id"):
-        logger.info("Set hourly rate %.2f on project %d", rate, project_id)
-    else:
-        logger.warning("Failed to set hourly rate on project %d: %s", project_id, result)
 
 
 async def create_project_invoice(data: dict, client: TripletexClient) -> dict:

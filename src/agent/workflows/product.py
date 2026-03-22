@@ -20,14 +20,25 @@ _REVERSE_FIELD_MAP = {v: k for k, v in _FIELD_MAP.items()}
 _HIGH_VAT_HINTS = ("high", "hoy", "h\u00f8y", "standard", "default", "25")
 
 
+async def _fetch_vat_types(client: TripletexClient) -> list[dict]:
+    """Fetch all VAT types once (cached on client to avoid duplicate GETs)."""
+    cached = getattr(client, "_product_vat_types", None)
+    if cached is not None:
+        return cached
+    result = await client.get("/ledger/vatType", params={"count": "100"})
+    vat_types = result.get("values", [])
+    client._product_vat_types = vat_types
+    return vat_types
+
+
 async def _lookup_vat_type_25(client: TripletexClient) -> int | None:
     """Get the 25% output (Utgående) VAT type ID."""
-    result = await client.get("/ledger/vatType", params={"count": "100"})
-    for vt in result.get("values", []):
+    vat_types = await _fetch_vat_types(client)
+    for vt in vat_types:
         if vt.get("percentage") == 25 and "utgående" in vt.get("name", "").lower():
             return vt["id"]
     # Fallback: any 25% type
-    for vt in result.get("values", []):
+    for vt in vat_types:
         if vt.get("percentage") == 25:
             return vt["id"]
     return None
@@ -39,8 +50,7 @@ async def _lookup_vat_type_from_string(client: TripletexClient, vat_hint: str) -
         return None
 
     hint = vat_hint.strip().lower()
-    result = await client.get("/ledger/vatType", params={"count": "100"})
-    vat_types = result.get("values", [])
+    vat_types = await _fetch_vat_types(client)
 
     pct_match = re.search(r"(\d+(?:[\.,]\d+)?)", hint)
     if pct_match:

@@ -7,7 +7,7 @@ logger = logging.getLogger("agent.workflows.department")
 
 async def _next_dept_number(client: TripletexClient) -> str:
     """Return the next free department number (max existing + 1)."""
-    result = await client.get("/department", params={"count": "0", "fields": "departmentNumber"})
+    result = await client.get("/department", params={"count": "1000", "fields": "id,departmentNumber"})
     existing = result.get("values", [])
     if not existing:
         return "1"
