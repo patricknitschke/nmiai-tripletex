@@ -348,6 +348,7 @@ async def _pay_supplier_invoice(
         "amount": str(amount),
         "paymentDate": tx_date,
         "useDefaultPaymentType": "true",
+        "partialPayment": "true",
     })
 
 
@@ -457,7 +458,7 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
 
     # Seed supplier invoice outstanding tracking for partial payment support
     for si in all_supplier_invoices:
-        si["_outstanding"] = si.get("amount", 0)
+        si["_outstanding"] = si.get("outstandingAmount", si.get("amount", 0))
 
     for row in rows:
         desc = row.get("description", "")

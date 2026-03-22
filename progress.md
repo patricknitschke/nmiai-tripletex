@@ -16,3 +16,30 @@
 - Added `TestCreateInvoice` regression tests for both branches: skip account PUT when 1920 is already configured, and perform account PUT when bank details are missing.
 - Updated outdated register_payment test expectation to assert fail-fast behavior (no fake invoice creation when no existing invoice is found) and current detailed error message.
 - Ran focused regression tests: `pytest -q tests/test_workflows.py -k "TestCreateInvoice or test_returns_error_when_invoice_not_found or test_caches_bank_account_check_per_client"` -> 4 passed.
+- Split the full tasks.csv corpus into workflow families and delegated four read-only audits (invoicing/payment, supplier/expense/voucher, project/people, reconciliation/analysis) using the Explore subagent.
+- Cross-checked the audit output against live source to separate fixed historical bugs from active gaps; confirmed project-invoice hourly-rate fallback, dimension forwarding, invoice verification, supplier reconciliation, and prompt hardening were already in code.
+- Reintroduced orchestrator fast-path skipping of Chief for slow/high-confidence prompt families and added rule-based fallback plan preambles for reconciliation, overdue reminders, payment reversals, FX payments, expense comparison, and dimension+voucher tasks.
+- Tightened payment ranking so open invoices outrank newer fully paid invoices when other match signals tie.
+- Added per-client caching for FX currency ID lookups and strengthened Chief prompt guidance for register_fx_payment routing.
+- Added regression tests in `tests/test_orchestrator.py` for rule-based routing/fallback and in `tests/test_workflows.py` for open-invoice preference and FX currency caching.
+- Ran focused validation: `pytest tests/test_orchestrator.py tests/test_workflows.py -k 'prefers_open_invoice or currency_lookup_is_cached_per_client or rule_based'` -> 5 passed.
+- Ran broader validation: `pytest tests/test_orchestrator.py tests/test_workflows.py -k 'TestRegisterPayment or TestRegisterFxPayment'` -> 12 passed.
+- Added regression coverage for customer-scoped credit-note matching via orderLines descriptions and for supplier-payment reconciliation behavior (partialPayment flag + zero-outstanding skip).
+- Ran targeted validation for the new coverage: `pytest tests/test_workflows.py -k 'TestCreateCreditNote or TestReconcileBankStatement'` -> 3 passed.
+- Investigated the remaining full-suite failures and fixed the real code drifts: payroll now errors on missing DOB instead of fabricating one, and create_customer now defaults supplier creation to `isCustomer=false`.
+- Aligned the payroll employment-creation regression with the current canonical lower-write behavior: employmentDetails stay inlined in POST /employee/employment and standardTime is only posted when hours are actually provided.
+- Re-ran the previously failing subset: `pytest tests/test_workflows.py -k 'test_creates_employment_when_missing or test_requires_real_date_of_birth_for_new_employment or test_supplier_flag'` -> 3 passed.
+- Re-ran the full workflow suite on the live repo: `pytest tests/test_workflows.py` -> 69 passed.
+- Re-ran orchestrator coverage: `pytest tests/test_orchestrator.py` -> 3 passed.
+- Delegated a full workflow audit across sales, accounting, HR, and project domains against `docs/tripletex_openapi.json` and consolidated the actionable findings.
+- Hardened invoice/order creation to always preflight bank account 1920 and use `productNumber` for product lookups.
+- Hardened payment registration to stay customer-scoped only and to fail before PUT when `paidAmountCurrency` cannot be derived for foreign-currency invoices.
+- Hardened expense registration to require both the payment account and incoming VAT type before voucher posting.
+- Hardened timesheet/project invoicing by enforcing hours bounds, requiring explicit activity selection when multiple activities exist, rejecting zero-rate time-based invoices, and stripping more readOnly fields from project PUT payloads.
+- Added targeted regression coverage for strict FX payment handling, order bank-account/product-number behavior, expense payment-account guardrails, timesheet activity ambiguity, and zero-rate project invoices.
+- Ran focused regressions: `pytest -q tests/test_workflows.py -k 'TestRegisterPayment or TestCreateInvoice or TestCreateProjectInvoice or TestRegisterExpense or TestRegisterTime'` -> 20 passed.
+- Ran the full workflow suite: `pytest -q tests/test_workflows.py` -> 59 passed, 4 failed. Residual failures are outside this hardening pass and reflect existing payroll/customer/supplier-invoice fixture or expectation drift.
+- Added voucher idempotency guards in `voucher.py`: supplier invoices now dedupe on booking date + supplier + `vendorInvoiceNumber`, and manual vouchers can dedupe on booking date + `externalVoucherNumber`/`idempotencyKey` + description + posting signature.
+- Added regression coverage for duplicate supplier invoices, duplicate manual vouchers with external references, and `allowDuplicate` bypass behavior.
+- Ran focused voucher validation: `pytest -q tests/test_workflows.py -k 'TestCreateSupplierInvoice or TestCreateVoucher'` -> 13 passed.
+- Ran broader accounting validation: `pytest -q tests/test_workflows.py tests/test_orchestrator.py -k 'TestCreateSupplierInvoice or TestCreateVoucher or TestRegisterPayment or TestRegisterFxPayment'` -> 25 passed.

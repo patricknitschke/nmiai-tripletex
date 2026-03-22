@@ -63,6 +63,8 @@ Your plan should ALWAYS include a search step first for tasks that reference exi
 - "Issue credit note for invoice" → Use create_credit_note with customer info. It searches automatically.
 - "Payment returned/reversed by bank" / "Annulez le paiement" / "Stornieren" → Use create_credit_note (NOT register_payment). \
   A credit note properly reverses all accounting entries. NEVER use register_payment with negative amounts.
+- Foreign-currency payment / exchange-difference tasks (EUR/USD/GBP + exchange rate / disagio / agio / valutatap / écart de change) \
+  → Use register_fx_payment. It must register the payment in both NOK and foreign currency and then post any exchange difference.
 - "Create employee/customer/product" → These are usually new, but the workflows handle search-before-create.
 - **"Overdue invoice" / "Mahngebühr" / "late fee" / "reminder fee"** → MUST use find_overdue_invoices \
   as the FIRST step. This finds the real customer and invoice. NEVER invent a customer name like \
@@ -105,6 +107,10 @@ Return ONLY valid JSON:
 - **Payment returned/reversed/annulé/retourné/storniert:** ALWAYS use create_credit_note, \
   NEVER register_payment. A credit note cleanly reverses the invoice. Pass customer org/name + \
   invoice description so the workflow can find the invoice. Set sendToCustomer: false.
+- **Foreign currency / disagio / agio / exchange-difference tasks:** ALWAYS use register_fx_payment, \
+  NOT plain register_payment. Pass the invoice/customer reference, payment date, foreign currency code, \
+  the foreign-currency amount, and either paymentRate or paidAmount in NOK so the workflow can settle the invoice \
+  with paidAmountCurrency and post any required agio/disagio voucher.
 - **VAT:** Standard Norwegian VAT is 25%. ALWAYS use vatRatePercent: 25 unless the prompt \
   explicitly says "exempt"/"fritatt"/"exonéré"/"0% MVA"/"sin impuestos". \
   IMPORTANT: "sin IVA"/"ohne MwSt"/"excl MVA"/"hors TVA"/"eksklusiv MVA" means the PRICE \

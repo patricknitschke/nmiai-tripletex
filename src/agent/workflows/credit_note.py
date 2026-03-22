@@ -99,11 +99,12 @@ async def _find_invoice(data: dict, client: TripletexClient) -> dict | None:
         if invoices:
             return invoices[0]
 
-    # Search by customer
+    # Search by customer — request orderLines so description ranking works
     search_params = {
         "invoiceDateFrom": "2000-01-01",
         "invoiceDateTo": "2099-12-31",
         "count": "1000",
+        "fields": "id,invoiceNumber,amount,amountExcludingVat,amountOutstanding,customer(*),isCreditNote,isCredited,orderLines(*)",
     }
     customer_id = await _resolve_customer_id(data, client)
     if customer_id:

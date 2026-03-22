@@ -22,10 +22,20 @@ logger = logging.getLogger("agent.workflows.fx_payment")
 
 async def _lookup_currency_id(code: str, client: TripletexClient) -> int | None:
     """Resolve currency code (e.g. 'EUR') to Tripletex currency ID."""
+    cache = getattr(client, "_currency_id_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(client, "_currency_id_cache", cache)
+
+    cache_key = code.upper()
+    if cache_key in cache:
+        return cache[cache_key]
+
     result = await client.get("/currency", params={"code": code, "count": "1"})
     for c in result.get("values", []):
         if c.get("code", "").upper() == code.upper():
             logger.info("Resolved currency %s → id=%d", code, c["id"])
+            cache[cache_key] = c["id"]
             return c["id"]
     logger.error("Could not resolve currency code: %s", code)
     return None

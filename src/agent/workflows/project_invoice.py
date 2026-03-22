@@ -25,6 +25,11 @@ _PROJECT_UPDATE_DROP_FIELDS = {
     "contributionMarginPercent",
     "numberOfSubProjects",
     "numberOfProjectParticipants",
+    "customerName",
+    "hierarchyNameAndNumber",
+    "projectManagerNameAndNumber",
+    "totalInvoicedOnAccountAmountAbsoluteCurrency",
+    "invoiceReserveTotalAmountCurrency",
     "orderLines",
     "projectHourlyRates",
     "projectParticipants",
@@ -36,7 +41,10 @@ def _requested_fixed_price(data: dict) -> float | None:
     """Extract caller-provided fixed price from known aliases."""
     for key in ("fixedprice", "fixedPrice", "fixedPriceAmount", "budget", "price"):
         if key in data and data.get(key) is not None:
-            return float(data[key])
+            try:
+                return float(data[key])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{key} must be numeric") from exc
     return None
 
 
@@ -204,13 +212,14 @@ async def create_project_invoice(data: dict, client: TripletexClient) -> dict:
             line_desc = description
 
         vat_id = await _lookup_vat_type_by_rate(25, client)
+        if vat_id is None:
+            return {"error": "Could not find outgoing VAT type for rate 25%"}
         ol = {
             "description": line_desc,
             "count": 1,
             "unitPriceExcludingVatCurrency": invoice_amount,
         }
-        if vat_id:
-            ol["vatType"] = {"id": vat_id}
+        ol["vatType"] = {"id": vat_id}
         order_lines.append(ol)
 
         logger.info("Fixed-price invoice: %.2f NOK (%s%%)", invoice_amount, percent or 100)
@@ -223,13 +232,14 @@ async def create_project_invoice(data: dict, client: TripletexClient) -> dict:
             fallback_amount = data.get("invoiceAmount") or data.get("amount")
             if fallback_amount:
                 vat_id = await _lookup_vat_type_by_rate(25, client)
+                if vat_id is None:
+                    return {"error": "Could not find outgoing VAT type for rate 25%"}
                 ol = {
                     "description": description or f"{project_name} — faktura",
                     "count": 1,
                     "unitPriceExcludingVatCurrency": float(fallback_amount),
                 }
-                if vat_id:
-                    ol["vatType"] = {"id": vat_id}
+                ol["vatType"] = {"id": vat_id}
                 order_lines.append(ol)
             else:
                 return {"error": f"No timesheet entries or amount for project '{project_name}'"}
@@ -254,6 +264,8 @@ async def create_project_invoice(data: dict, client: TripletexClient) -> dict:
             activities_task = _get_project_activities(project_id, client)
             vat_task = _lookup_vat_type_by_rate(25, client)
             activities, vat_id = await asyncio.gather(activities_task, vat_task)
+            if vat_id is None:
+                return {"error": "Could not find outgoing VAT type for rate 25%"}
 
             # Build one invoice line per activity
             override_rate = data.get("hourlyRate") or data.get("rate")
@@ -271,22 +283,20 @@ async def create_project_invoice(data: dict, client: TripletexClient) -> dict:
                 else:
                     rate = activity_entry_rate.get(act_id, 0)
 
-                if rate:
-                    ol = {
-                        "description": f"{act_name} — {chargeable}h",
-                        "count": chargeable,
-                        "unitPriceExcludingVatCurrency": float(rate),
-                    }
-                else:
-                    # No rate available — use total hours as description
-                    ol = {
-                        "description": f"{act_name} — {chargeable}h",
-                        "count": 1,
-                        "unitPriceExcludingVatCurrency": 0,
+                if not rate:
+                    return {
+                        "error": (
+                            f"No hourly rate available for activity '{act_name}' on project '{project_name}'. "
+                            "Set hourlyRate on the project or pass an explicit rate."
+                        )
                     }
 
-                if vat_id:
-                    ol["vatType"] = {"id": vat_id}
+                ol = {
+                    "description": f"{act_name} — {chargeable}h",
+                    "count": chargeable,
+                    "unitPriceExcludingVatCurrency": float(rate),
+                    "vatType": {"id": vat_id},
+                }
                 order_lines.append(ol)
 
                 logger.info("Time line: %s — %.1fh × %.2f = %.2f", act_name, chargeable, rate or 0, chargeable * (rate or 0))

@@ -3,7 +3,7 @@ import logging
 from datetime import date
 
 from ..tripletex import TripletexClient
-from .voucher import _resolve_supplier, _resolve_vat_type, _post_voucher
+from .voucher import _resolve_supplier, _resolve_vat_type, _resolve_no_vat_type, _post_voucher
 
 logger = logging.getLogger("agent.workflows.expense")
 
@@ -82,9 +82,10 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
             return await _resolve_supplier(data, client)
         return None
 
-    accounts_map, vat_type_id, department_id, supplier_id = await asyncio.gather(
+    accounts_map, vat_type_id, no_vat_type_id, department_id, supplier_id = await asyncio.gather(
         _resolve_accounts(),
         _resolve_vat_type(client, vat_rate, "input"),
+        _resolve_no_vat_type(client),
         _resolve_dept(),
         _resolve_sup(),
     )
@@ -96,10 +97,13 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
     if not expense_account_id:
         return {"error": f"Expense account {expense_account} not found in Tripletex"}
 
-    warnings = []
     if not payment_account_id:
-        warnings.append(f"Payment account {payment_account} not found — credit posting will lack account reference")
-        logger.warning("Payment account %s not found", payment_account)
+        return {"error": f"Payment account {payment_account} not found in Tripletex"}
+
+    if vat_type_id is None:
+        return {"error": f"Could not find incoming VAT type for rate {vat_rate}%"}
+
+    warnings = []
 
     # B25v2: Two postings — expense with amountGross + vatType, bank with negative amountGross
     # Tripletex auto-generates the VAT posting on 2710.
@@ -128,10 +132,12 @@ async def register_expense(data: dict, client: TripletexClient) -> dict:
         "date": expense_date,
         "description": full_desc,
         "amountGross": -amount_incl,
+        "account": {"id": payment_account_id},
         "row": 2,
     }
-    if payment_account_id:
-        payment_posting["account"] = {"id": payment_account_id}
+    # Explicitly set no-VAT to prevent Tripletex auto-applying default VAT on bank account
+    if no_vat_type_id:
+        payment_posting["vatType"] = {"id": no_vat_type_id}
     postings.append(payment_posting)
 
     voucher = {

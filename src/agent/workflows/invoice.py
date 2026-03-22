@@ -80,14 +80,9 @@ async def _ensure_customer(data: dict, client: TripletexClient) -> int | None:
         result = await create_customer(customer_data, client)
         return result.get("value", {}).get("id")
 
-    # Try to find by name — exact match
+    # Find or create by name — create_customer already searches first, so go directly
     customer_name = data.get("customerName")
     if customer_name:
-        search = await client.get("/customer", params={"customerName": customer_name, "count": "10"})
-        for cust in search.get("values", []):
-            if cust.get("name", "").lower() == customer_name.lower():
-                return cust["id"]
-        # Create minimal customer
         result = await create_customer({"name": customer_name}, client)
         return result.get("value", {}).get("id")
 
@@ -143,7 +138,7 @@ async def _build_order_lines(lines: list[dict], client: TripletexClient) -> list
             prod_name = line.get("description", f"Product {product_number}")
             price = line.get("unitPriceExcludingVatCurrency", line.get("unitPrice", 0))
 
-            search = await client.get("/product", params={"number": str(product_number), "count": "1"})
+            search = await client.get("/product", params={"productNumber": str(product_number), "count": "1"})
             existing = search.get("values", [])
             if existing:
                 pid = existing[0]["id"]
@@ -199,6 +194,8 @@ async def create_order(data: dict, client: TripletexClient) -> dict:
         logger.error("No customer ID available for order creation")
         return {"error": "No customer for order"}
 
+    await _ensure_bank_account(client)
+
     order_lines = await _build_order_lines(data.get("lines", data.get("orderLines", [])), client)
 
     payload = {
@@ -236,6 +233,8 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
         logger.error("No customer ID available for invoice creation")
         return {"error": "No customer for invoice"}
 
+    await _ensure_bank_account(client)
+
     # Build order lines from invoice line data
     order_lines = await _build_order_lines(data.get("lines", data.get("orderLines", [])), client)
 
@@ -270,22 +269,6 @@ async def create_invoice(data: dict, client: TripletexClient) -> dict:
     invoice_id = result.get("value", {}).get("id")
     if invoice_id:
         logger.info("Invoice created with ID: %d", invoice_id)
-
-        # Free GET: verify invoice lines and amounts
-        verify = await client.get(f"/invoice/{invoice_id}", params={"fields": "id,amount,amountOutstanding,orderLines(*)"})
-        actual = verify.get("value", {})
-        actual_lines = actual.get("orderLines", [])
-        expected_line_count = len(order_lines)
-        warnings = []
-        if len(actual_lines) != expected_line_count:
-            warnings.append(f"Expected {expected_line_count} invoice line(s), got {len(actual_lines)}")
-        if actual.get("amount", 0) == 0 and expected_line_count > 0:
-            warnings.append(f"Invoice amount is 0 despite {expected_line_count} order line(s)")
-        if warnings:
-            result["warnings"] = warnings
-            logger.warning("Invoice %d verification: %s", invoice_id, warnings)
-        else:
-            logger.info("Invoice %d verified: %d lines, amount=%.2f", invoice_id, len(actual_lines), actual.get("amount", 0))
     else:
         logger.error("Failed to create invoice: %s", result)
 

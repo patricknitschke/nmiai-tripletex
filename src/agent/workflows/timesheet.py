@@ -48,24 +48,27 @@ async def _resolve_employee(data: dict, client: TripletexClient) -> int | None:
     return None
 
 
-async def _resolve_project(data: dict, client: TripletexClient) -> int | None:
-    """Find project by name or ID."""
+async def _resolve_project(data: dict, client: TripletexClient) -> tuple[int | None, str | None]:
+    """Find project by name or ID. Returns (project_id, project_start_date)."""
     project_id = data.get("projectId")
     if project_id:
-        return project_id
+        # Fetch startDate to avoid extra GET later for date clamping
+        proj_result = await client.get(f"/project/{project_id}", params={"fields": "id,startDate"})
+        start_date = proj_result.get("value", {}).get("startDate")
+        return project_id, start_date
 
     project_name = data.get("projectName")
     if project_name:
-        result = await client.get("/project", params={"name": project_name, "count": "10"})
+        result = await client.get("/project", params={"name": project_name, "count": "10", "fields": "id,name,startDate"})
         for proj in result.get("values", []):
             if proj.get("name", "").lower() == project_name.lower():
                 logger.info("Found project '%s' (id=%d)", project_name, proj["id"])
-                return proj["id"]
+                return proj["id"], proj.get("startDate")
 
-    return None
+    return None, None
 
 
-async def _resolve_activity(data: dict, client: TripletexClient, project_id: int, employee_id: int) -> int | None:
+async def _resolve_activity(data: dict, client: TripletexClient, project_id: int, employee_id: int, entry_date: str | None = None) -> int | None:
     """Find or create an activity for timesheet registration."""
     activity_id = data.get("activityId")
     if activity_id:
@@ -74,11 +77,14 @@ async def _resolve_activity(data: dict, client: TripletexClient, project_id: int
     activity_name = data.get("activityName") or data.get("activity")
 
     # First try to find applicable activities for this project
-    today = date.today().isoformat()
+    # Use entry_date (not today) and disable filterExistingHours to avoid
+    # silently hiding activities the employee already has hours on.
+    lookup_date = entry_date or date.today().isoformat()
     result = await client.get("/activity/>forTimeSheet", params={
         "projectId": str(project_id),
         "employeeId": str(employee_id),
-        "date": today,
+        "date": lookup_date,
+        "filterExistingHours": "false",
         "count": "100",
     })
     activities = result.get("values", [])
@@ -104,14 +110,16 @@ async def _resolve_activity(data: dict, client: TripletexClient, project_id: int
             logger.info("Found general activity '%s' (id=%d)", activity_name, values[0]["id"])
             return values[0]["id"]
 
-    # No activity name given — use first project-specific activity (reasonable default)
-    if not activity_name and activities:
-        logger.info("No activity name specified, using first project activity '%s' (id=%d)", activities[0].get("name"), activities[0]["id"])
+    # No activity name given — only auto-select when there is exactly one valid activity.
+    if not activity_name and len(activities) == 1:
+        logger.info("No activity name specified, using sole project activity '%s' (id=%d)", activities[0].get("name"), activities[0]["id"])
         return activities[0]["id"]
 
     # Activity name given but no match found anywhere — fail explicitly
     if activity_name:
         logger.error("Activity '%s' not found in project %d or general activities", activity_name, project_id)
+    elif activities:
+        logger.error("Project %d has multiple activities; activityName or activityId is required", project_id)
     else:
         logger.error("No activities available for project %d", project_id)
     return None
@@ -192,14 +200,18 @@ async def register_time(data: dict, client: TripletexClient) -> dict:
 
     if not hours:
         return {"error": "No hours specified for timesheet entry"}
+    if float(hours) <= 0 or float(hours) > 24:
+        return {"error": "hours must be > 0 and <= 24"}
+    if float(chargeable) < 0 or float(chargeable) > 24:
+        return {"error": "chargeableHours must be >= 0 and <= 24"}
 
     # Resolve employee
     employee_id = await _resolve_employee(data, client)
     if not employee_id:
         return {"error": "Could not find employee for timesheet entry"}
 
-    # Resolve project
-    project_id = await _resolve_project(data, client)
+    # Resolve project (returns startDate too — saves 1 GET for date clamping)
+    project_id, proj_start = await _resolve_project(data, client)
     if not project_id:
         return {"error": "Could not find project for timesheet entry"}
 
@@ -209,23 +221,18 @@ async def register_time(data: dict, client: TripletexClient) -> dict:
         await _set_project_hourly_rate(project_id, float(hourly_rate), client)
 
     # Clamp entry_date to project startDate (Tripletex rejects entries before it)
-    try:
-        proj_result = await client.get(f"/project/{project_id}")
-        proj_start = proj_result.get("value", {}).get("startDate")
-        if proj_start and entry_date < proj_start:
-            logger.warning("Entry date %s is before project start %s — clamping to start date", entry_date, proj_start)
-            entry_date = proj_start
-    except Exception:
-        pass  # non-fatal — worst case the API will reject it
+    if proj_start and entry_date < proj_start:
+        logger.warning("Entry date %s is before project start %s — clamping to start date", entry_date, proj_start)
+        entry_date = proj_start
 
-    # Resolve activity
-    activity_id = await _resolve_activity(data, client, project_id, employee_id)
+    # Resolve activity (pass entry_date for correct activity filtering)
+    activity_id = await _resolve_activity(data, client, project_id, employee_id, entry_date=entry_date)
     if not activity_id:
         return {"error": "Could not find activity for timesheet entry"}
 
     # Build timesheet entry
-    # NOTE: chargeableHours is readOnly on TimesheetEntry;
-    # the writable field is projectChargeableHours (min 0, max 24)
+    # projectChargeableHours is the writable request field; chargeableHours on
+    # the response is a derived/readOnly value in the Tripletex schema.
     entry = {
         "employee": {"id": employee_id},
         "project": {"id": project_id},

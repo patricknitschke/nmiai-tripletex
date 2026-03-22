@@ -9,10 +9,11 @@ import pytest
 from src.agent.workflows.payroll import register_payroll
 from src.agent.workflows.customer import create_customer
 from src.agent.workflows.payment import register_payment
-from src.agent.workflows.fx_payment import register_fx_payment
-from src.agent.workflows.invoice import create_invoice
+from src.agent.workflows.fx_payment import register_fx_payment, _lookup_currency_id
+from src.agent.workflows.invoice import create_invoice, create_order
 from src.agent.workflows.product import create_product
 from src.agent.workflows.project_invoice import create_project_invoice
+from src.agent.workflows.timesheet import register_time
 from src.agent.workflows.voucher import create_supplier_invoice, create_voucher, _split_into_balanced_pairs
 from src.agent.workflows.expense import register_expense
 from src.agent.workflows.ledger_analysis import compare_expenses, verify_trial_balance
@@ -84,7 +85,7 @@ class TestRegisterPayroll:
         assert "salaryLines" not in payslip
 
     async def test_creates_employment_when_missing(self, mock_client):
-        """Employee exists but has no employment record — should auto-create."""
+        """Employee exists but has no employment record — should auto-create with inlined details."""
         employee_no_emp = make_employee(id=5, email="new@x.org", employments=[])
 
         mock_client.when_get("/employee", {"values": [employee_no_emp]})
@@ -106,8 +107,14 @@ class TestRegisterPayroll:
         assert "error" not in result
         # Verify employment was created
         mock_client.assert_called("POST", "/employee/employment")
-        mock_client.assert_called("POST", "/employee/employment/details")
-        mock_client.assert_called("POST", "/employee/standardTime")
+        mock_client.assert_not_called("POST", "/employee/employment/details")
+        mock_client.assert_not_called("POST", "/employee/standardTime")
+
+        employment_call = mock_client.get_calls("POST", "/employee/employment")[0]
+        payload = employment_call["payload"]
+        assert payload["employee"] == {"id": 5}
+        assert payload["division"] == {"id": 1}
+        assert len(payload["employmentDetails"]) == 1
 
     async def test_sets_year_and_month(self, mock_client):
         """Transaction must include year and month fields."""
@@ -403,6 +410,63 @@ class TestRegisterPayment:
         assert put_calls[0]["params"]["paidAmount"] == "58375"
         assert "id" not in put_calls[0]["params"]
 
+    async def test_foreign_currency_requires_paid_amount_currency_when_not_inferable(self, mock_client):
+        invoice = make_invoice(
+            id=88,
+            amount=1200,
+            amount_outstanding=1200,
+            currencyCode="EUR",
+            currency={"code": "EUR"},
+        )
+
+        mock_client.when_get("/invoice/88", {"value": invoice})
+        mock_client.when_get("/invoice/paymentType", {"values": [make_payment_type(id=1)]})
+
+        result = await register_payment({
+            "invoiceId": 88,
+            "fullPayment": True,
+        }, mock_client)
+
+        assert result["error"] == (
+            "Invoice 88 uses EUR, but paidAmountCurrency was not provided and could not be inferred from the invoice amounts."
+        )
+        mock_client.assert_not_called("PUT", "/invoice/88/:payment")
+
+    async def test_prefers_open_invoice_over_newer_paid_invoice(self, mock_client):
+        customer = make_customer(id=10, name="Costa Brava SL", org_number="923798498")
+        paid_invoice = make_invoice(
+            id=200,
+            amount=59875,
+            amount_outstanding=0,
+            amountExcludingVat=47900,
+            customer={"id": 10, "name": "Costa Brava SL", "organizationNumber": "923798498"},
+            orderLines=[{"description": "Horas de consultoría"}],
+        )
+        open_invoice = make_invoice(
+            id=150,
+            amount=59875,
+            amount_outstanding=59875,
+            amountExcludingVat=47900,
+            customer={"id": 10, "name": "Costa Brava SL", "organizationNumber": "923798498"},
+            orderLines=[{"description": "Horas de consultoría"}],
+        )
+
+        mock_client.when_get("/customer", {"values": [customer]})
+        mock_client.when_get("/invoice", {"values": [paid_invoice, open_invoice]})
+        mock_client.when_get("/invoice/paymentType", {"values": [make_payment_type(id=1)]})
+        mock_client.when_put("/invoice/150/:payment", {"value": {"id": 150}})
+        mock_client.when_get("/invoice/150", {"value": {**open_invoice, "amountOutstanding": 0}})
+
+        result = await register_payment({
+            "customerName": "Costa Brava SL",
+            "customerOrgNumber": "923798498",
+            "description": "Horas de consultoría",
+            "fullPayment": True,
+        }, mock_client)
+
+        assert "error" not in result
+        assert len(mock_client.get_calls("PUT", "/invoice/150/:payment")) == 1
+
     async def test_invoice_search_uses_customer_scoped_params_first(self, mock_client):
         customer = make_customer(id=10, name="Solmar SL", org_number="939332235")
         invoice = make_invoice(
@@ -485,12 +549,43 @@ class TestRegisterPayment:
         )
         mock_client.assert_not_called("POST", "/order")
 
+    async def test_does_not_fallback_to_broad_invoice_search(self, mock_client):
+        customer = make_customer(id=10, name="Solmar SL", org_number="939332235")
+
+        mock_client.when_get("/customer", {"values": [customer]})
+        mock_client._responses[("GET", "/invoice")] = [
+            {"values": []},
+            {"values": [make_invoice(id=999, amount=1000, amount_outstanding=1000)]},
+        ]
+
+        result = await register_payment({
+            "customerName": "Solmar SL",
+            "customerOrgNumber": "939332235",
+            "description": "Consulting",
+            "paidAmount": 1000,
+        }, mock_client)
+
+        assert "Could not find existing invoice for payment" in result["error"]
+        invoice_calls = mock_client.get_calls("GET", "/invoice")
+        assert len(invoice_calls) == 1
+        assert invoice_calls[0]["params"]["customerId"] == "10"
+
 
 # ============================================================
 # register_fx_payment — strict lookup + deterministic FX logic
 # ============================================================
 
 class TestRegisterFxPayment:
+
+    async def test_currency_lookup_is_cached_per_client(self, mock_client):
+        mock_client.when_get("/currency", {"values": [{"id": 2, "code": "EUR"}]})
+
+        first = await _lookup_currency_id("EUR", mock_client)
+        second = await _lookup_currency_id("EUR", mock_client)
+
+        assert first == 2
+        assert second == 2
+        assert len(mock_client.get_calls("GET", "/currency")) == 1
 
     async def test_returns_error_when_fx_invoice_not_found(self, mock_client):
         customer = make_customer(id=10, name="Solmar SL", org_number="939332235")
@@ -615,6 +710,7 @@ class TestCreateInvoice:
 
     async def test_posts_invoice_once_with_embedded_order(self, mock_client):
         mock_client.when_get("/customer", {"values": [make_customer(id=10, name="Existing AS")]})
+        mock_client.when_get("/ledger/account", {"values": [{**make_account(id=1, number=1920), "version": 1, "bankAccountNumber": "86011117947", "isBankAccount": True}]})
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
         mock_client.when_post("/invoice", {"value": make_invoice(id=22, amount=12500)})
         mock_client.when_get("/invoice/22", {"value": {"id": 22, "amount": 12500, "orderLines": [{}]}})
@@ -642,6 +738,7 @@ class TestCreateInvoice:
 
     async def test_send_to_customer_defaults_false(self, mock_client):
         mock_client.when_get("/customer", {"values": [make_customer(id=10, name="Existing AS")]})
+        mock_client.when_get("/ledger/account", {"values": [{**make_account(id=1, number=1920), "version": 1, "bankAccountNumber": "86011117947", "isBankAccount": True}]})
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
         mock_client.when_post("/invoice", {"value": make_invoice(id=23, amount=12500)})
         mock_client.when_get("/invoice/23", {"value": {"id": 23, "amount": 12500, "orderLines": [{}]}})
@@ -653,6 +750,22 @@ class TestCreateInvoice:
 
         invoice_call = mock_client.get_calls("POST", "/invoice")[0]
         assert invoice_call["params"] == {"sendToCustomer": "false"}
+
+    async def test_create_order_ensures_bank_account_and_uses_product_number_search(self, mock_client):
+        mock_client.when_get("/customer", {"values": [make_customer(id=10, name="Existing AS")]})
+        mock_client.when_get("/ledger/account", {"values": [{**make_account(id=1, number=1920), "version": 1, "bankAccountNumber": "86011117947", "isBankAccount": True}]})
+        mock_client.when_get("/product", {"values": [{"id": 90, "number": "P-100", "name": "Widget"}]})
+        mock_client.when_post("/order", {"value": {"id": 44}})
+
+        await create_order({
+            "customerName": "Existing AS",
+            "orderLines": [{"productNumber": "P-100", "description": "Widget", "count": 1, "unitPrice": 1000}],
+        }, mock_client)
+
+        product_call = mock_client.get_calls("GET", "/product")[0]
+        assert product_call["params"]["productNumber"] == "P-100"
+        assert "number" not in product_call["params"]
+        assert len(mock_client.get_calls("GET", "/ledger/account")) == 1
 
 
 # ============================================================
@@ -848,6 +961,31 @@ class TestCreateProjectInvoice:
             "version": 3,
         }
 
+    async def test_time_based_invoice_fails_when_hourly_rate_missing(self, mock_client):
+        project = {
+            "id": 7,
+            "name": "Alpha",
+            "isFixedPrice": False,
+            "customer": {"id": 42},
+        }
+
+        mock_client.when_get("/project/7", {"value": project})
+        mock_client.when_get("/ledger/account", {"values": [{**make_account(id=1, number=1920), "bankAccountNumber": "86011117947"}]})
+        mock_client.when_get("/timesheet/entry", {"values": [{
+            "activity": {"id": 5},
+            "hours": 3,
+            "chargeableHours": 3,
+        }]})
+        mock_client.when_get("/activity", {"values": [{"id": 5, "name": "Consulting"}]})
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+
+        result = await create_project_invoice({"projectId": 7, "includeHours": True}, mock_client)
+
+        assert result["error"] == (
+            "No hourly rate available for activity 'Consulting' on project 'Alpha'. Set hourlyRate on the project or pass an explicit rate."
+        )
+        mock_client.assert_not_called("POST", "/invoice")
+
     async def test_caches_bank_account_check_per_client(self, mock_client):
         project = {
             "id": 7,
@@ -880,7 +1018,7 @@ class TestCreateSupplierInvoice:
 
     async def test_two_posting_structure(self, mock_client):
         """Supplier invoice should create expense debit + AP credit postings."""
-        mock_client.when_get("/customer", {"values": [make_customer(id=5, name="Polaris AS")]})
+        mock_client.when_get("/supplier", {"values": [{"id": 5, "name": "Polaris AS", "organizationNumber": "833875094"}]})
         mock_client.when_get("/ledger/account", {"values": [
             make_account(id=100, number=7300, name="Kontortjenester"),
             make_account(id=200, number=2400, name="Leverandorgjeld"),
@@ -914,8 +1052,8 @@ class TestCreateSupplierInvoice:
 
     async def test_amount_calculation(self, mock_client):
         """amountInclVat=12500 with 25% VAT should preserve gross on postings."""
-        mock_client.when_get("/customer", {"values": []})
-        mock_client.when_post("/customer", {"value": make_customer(id=1)})
+        mock_client.when_get("/supplier", {"values": []})
+        mock_client.when_post("/supplier", {"value": {"id": 1, "name": "Test"}})
         mock_client.when_get("/ledger/account", {"values": [
             make_account(id=50, number=7300),
             make_account(id=51, number=2400),
@@ -936,6 +1074,71 @@ class TestCreateSupplierInvoice:
         assert [p for p in postings if p["amountGross"] > 0][0]["amountGross"] == 12500
         assert [p for p in postings if p["amountGross"] < 0][0]["amountGross"] == -12500
 
+    async def test_blocks_duplicate_supplier_invoice_by_vendor_invoice_number(self, mock_client):
+        mock_client.when_get("/supplier", {"values": [{"id": 5, "name": "Polaris AS", "organizationNumber": "833875094"}]})
+        mock_client.when_get("/ledger/account", {"values": [
+            make_account(id=100, number=7300, name="Kontortjenester"),
+            make_account(id=200, number=2400, name="Leverandorgjeld"),
+        ]})
+        mock_client._responses[("GET", "/ledger/voucher")] = [{
+            "values": [{
+                "id": 901,
+                "vendorInvoiceNumber": "INV-2026-2076",
+                "postings": [
+                    {"supplier": {"id": 5}},
+                ],
+            }]
+        }]
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+
+        result = await create_supplier_invoice({
+            "supplierName": "Polaris AS",
+            "supplierOrgNumber": "833875094",
+            "invoiceNumber": "INV-2026-2076",
+            "amountInclVat": 12500,
+            "vatRate": 25,
+            "expenseAccount": 7300,
+            "description": "Kontortjenester",
+            "date": "2026-03-22",
+        }, mock_client)
+
+        assert result["error"] == "Supplier invoice already exists for this supplier/invoice number/date"
+        assert result["existingVoucherId"] == 901
+        mock_client.assert_not_called("POST", "/ledger/voucher")
+
+    async def test_allow_duplicate_bypasses_supplier_invoice_idempotency(self, mock_client):
+        mock_client.when_get("/supplier", {"values": [{"id": 5, "name": "Polaris AS", "organizationNumber": "833875094"}]})
+        mock_client.when_get("/ledger/account", {"values": [
+            make_account(id=100, number=7300, name="Kontortjenester"),
+            make_account(id=200, number=2400, name="Leverandorgjeld"),
+        ]})
+        mock_client._responses[("GET", "/ledger/voucher")] = [{
+            "values": [{
+                "id": 901,
+                "vendorInvoiceNumber": "INV-2026-2076",
+                "postings": [
+                    {"supplier": {"id": 5}},
+                ],
+            }]
+        }]
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+        mock_client.when_post("/ledger/voucher", {"value": {"id": 200}})
+
+        result = await create_supplier_invoice({
+            "supplierName": "Polaris AS",
+            "supplierOrgNumber": "833875094",
+            "invoiceNumber": "INV-2026-2076",
+            "amountInclVat": 12500,
+            "vatRate": 25,
+            "expenseAccount": 7300,
+            "description": "Kontortjenester",
+            "date": "2026-03-22",
+            "allowDuplicate": True,
+        }, mock_client)
+
+        assert result["value"]["id"] == 200
+        mock_client.assert_called("POST", "/ledger/voucher")
+
 
 # ============================================================
 # register_expense — 2-posting structure (B25v2 fix)
@@ -946,7 +1149,10 @@ class TestRegisterExpense:
 
     async def test_two_posting_expense(self, mock_client):
         """B25v2: Expense uses 2 postings: expense (amountGross + vatType) + bank credit."""
-        mock_client.when_get("/ledger/account", {"values": [make_account(id=50, number=6540)]})
+        mock_client.when_get("/ledger/account", {"values": [
+            make_account(id=50, number=6540),
+            make_account(id=51, number=1920),
+        ]})
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
         mock_client.when_get("/department", {"values": [make_department(id=10, name="Lager")]})
         mock_client.when_post("/ledger/voucher", {"value": {"id": 300}})
@@ -972,7 +1178,10 @@ class TestRegisterExpense:
 
     async def test_department_linked(self, mock_client):
         """Expense posting should include department."""
-        mock_client.when_get("/ledger/account", {"values": [make_account()]})
+        mock_client.when_get("/ledger/account", {"values": [
+            make_account(id=50, number=7140),
+            make_account(id=51, number=1920),
+        ]})
         mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
         mock_client.when_get("/department", {"values": [make_department(id=42, name="Salg")]})
         mock_client.when_post("/ledger/voucher", {"value": {"id": 1}})
@@ -987,6 +1196,58 @@ class TestRegisterExpense:
         post_call = mock_client.get_calls("POST", "/ledger/voucher")[0]
         expense_posting = [p for p in post_call["payload"]["postings"] if p["amountGross"] > 0][0]
         assert expense_posting["department"]["id"] == 42
+
+    async def test_fails_when_payment_account_missing(self, mock_client):
+        mock_client.when_get("/ledger/account", {"values": [make_account(id=50, number=6540)]})
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+
+        result = await register_expense({
+            "description": "Oppbevaringsboks",
+            "amountInclVat": 500,
+            "vatRate": 25,
+            "expenseAccount": 6540,
+            "paymentAccount": 1920,
+        }, mock_client)
+
+        assert result["error"] == "Payment account 1920 not found in Tripletex"
+        mock_client.assert_not_called("POST", "/ledger/voucher")
+
+
+# ============================================================
+# register_time — strict activity selection and OpenAPI bounds
+# ============================================================
+
+class TestRegisterTime:
+
+    async def test_requires_activity_name_when_project_has_multiple_activities(self, mock_client):
+        employee = make_employee(id=1, email="test@example.org")
+        mock_client.when_get("/employee", {"values": [employee]})
+        mock_client.when_get("/project", {"values": [{"id": 7, "name": "Alpha"}]})
+        mock_client.when_get("/project/7", {"value": {"id": 7, "startDate": "2026-03-01"}})
+        mock_client.when_get("/activity/>forTimeSheet", {"values": [
+            {"id": 10, "name": "Consulting"},
+            {"id": 11, "name": "Support"},
+        ]})
+
+        result = await register_time({
+            "employeeEmail": "test@example.org",
+            "projectName": "Alpha",
+            "hours": 7.5,
+            "date": "2026-03-22",
+        }, mock_client)
+
+        assert result["error"] == "Could not find activity for timesheet entry"
+        mock_client.assert_not_called("POST", "/timesheet/entry")
+
+    async def test_rejects_hours_above_openapi_limit(self, mock_client):
+        result = await register_time({
+            "employeeId": 1,
+            "projectId": 7,
+            "activityId": 10,
+            "hours": 25,
+        }, mock_client)
+
+        assert result["error"] == "hours must be > 0 and <= 24"
 
 
 # ============================================================
@@ -1093,6 +1354,60 @@ class TestCreateVoucher:
         mock_client.assert_not_called("POST", "/ledger/account")
         mock_client.assert_not_called("POST", "/ledger/account/list")
         mock_client.assert_not_called("POST", "/ledger/voucher")
+
+    async def test_blocks_duplicate_voucher_when_external_reference_matches(self, mock_client):
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+        mock_client.when_get("/ledger/account", {"values": [
+            make_account(id=50, number=6300),
+            make_account(id=51, number=1920),
+        ]})
+        mock_client._responses[("GET", "/ledger/voucher")] = [{
+            "values": [{
+                "id": 777,
+                "externalVoucherNumber": "retry-safe-1",
+                "description": "Test entry",
+                "postings": [
+                    {"account": {"id": 50}, "amountGross": 1000.0},
+                    {"account": {"id": 51}, "amountGross": -1000.0},
+                ],
+            }]
+        }]
+
+        result = await create_voucher({
+            "description": "Test entry",
+            "date": "2026-03-22",
+            "externalVoucherNumber": "retry-safe-1",
+            "postings": [
+                {"account": 6300, "amount": 1000},
+                {"account": 1920, "amount": -1000},
+            ],
+        }, mock_client)
+
+        assert result["error"] == "Voucher already exists for this externalVoucherNumber/date"
+        assert result["existingVoucherId"] == 777
+        mock_client.assert_not_called("POST", "/ledger/voucher")
+
+    async def test_writes_external_voucher_number_for_idempotent_voucher(self, mock_client):
+        mock_client.when_get("/ledger/vatType", {"values": make_vat_types()})
+        mock_client.when_get("/ledger/account", {"values": [
+            make_account(id=50, number=6300),
+            make_account(id=51, number=1920),
+        ]})
+        mock_client.when_get("/ledger/voucher", {"values": []})
+        mock_client.when_post("/ledger/voucher", {"value": {"id": 1}})
+
+        await create_voucher({
+            "description": "Test entry",
+            "date": "2026-03-22",
+            "idempotencyKey": "retry-safe-2",
+            "postings": [
+                {"account": 6300, "amount": 1000},
+                {"account": 1920, "amount": -1000},
+            ],
+        }, mock_client)
+
+        post_call = mock_client.get_calls("POST", "/ledger/voucher")[0]
+        assert post_call["payload"]["externalVoucherNumber"] == "retry-safe-2"
 
 
 class TestVerifyTrialBalance:

@@ -84,7 +84,9 @@ async def register_payroll(data: dict, client: TripletexClient) -> dict:
     if not employments:
         logger.info("No employment record found, creating one...")
         if not emp_value.get("dateOfBirth"):
-            dob = data.get("dateOfBirth") or "1990-01-15"
+            dob = data.get("dateOfBirth")
+            if not dob:
+                return {"error": "dateOfBirth is required to create employment for payroll"}
             logger.info("Setting employee %d dateOfBirth=%s for employment requirement", employee_id, dob)
             await client.put(f"/employee/{employee_id}", {
                 "id": employee_id,

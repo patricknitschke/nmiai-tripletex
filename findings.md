@@ -14,3 +14,22 @@
 - Chief + Senior prompts now enforce month-end sequence: account discovery -> missing-account creation -> one voucher per journal entry -> optional balance-sheet verification when requested.
 - Month-end prompt guidance now explicitly requires linear depreciation crediting accumulated depreciation contra-account (e.g. 1209), not gross asset account 1200.
 - Invoice workflow bank-account preflight now treats account 1920 as usable when it already has any bankAccountNumber and isBankAccount is not false; this avoids unnecessary PUT /ledger/account writes and preserves the 2-write optimum (POST /order + PUT /order/{id}/:invoice) when no account correction is needed.
+- Prompt-corpus audit across invoicing, supplier/expense, project/people, and reconciliation families confirmed many historical bugs are already fixed in live code; the highest-value remaining gaps were orchestration fallback/routing, FX workflow discoverability, and invoice ranking when a customer has multiple invoices.
+- Orchestrator now has deterministic fast-path handling for slow/high-confidence prompt families (closing, dimensions, bank reconciliation, expense-comparison) and supplies rule-based fallback preambles for reconciliation, overdue reminders, payment reversals, FX payments, compare_expenses, and create_dimension_voucher.
+- Chief planning guidance now explicitly routes foreign-currency exchange-difference prompts to register_fx_payment instead of plain register_payment.
+- FX currency lookup now caches currency IDs per client instance, removing repeated GET /currency calls within repeated FX operations.
+- Payment ranking now prefers open invoices over newer fully paid invoices when customer/name/amount/description signals otherwise tie, which reduces duplicate-invoice drift on payment prompts.
+- Credit-note customer-scoped invoice search now requests orderLines(*) so description-based ranking works before any broad fallback.
+- Bank reconciliation supplier payment flow now seeds outstanding tracking from outstandingAmount when present and sends partialPayment=true on supplier payment registration.
+- Payroll no longer fabricates a dateOfBirth when it needs to create employment from a payroll run; it now fails explicitly until a real DOB is provided.
+- Payroll keeps the lower-write employment path by inlining employmentDetails in the employment POST instead of always adding a second details write.
+- Supplier creation through create_customer now explicitly sets isCustomer=false when isSupplier=true unless the caller overrides it.
+- create_invoice and create_order now both run the same account-1920 preflight, so canonical invoicing/order flows avoid hidden invoice failures while still skipping writes when 1920 is already usable.
+- Invoice order-line product resolution now searches Tripletex with productNumber (not deprecated/legacy number filter) before deciding whether a product must be created.
+- register_payment now disables broad invoice fallback and only pays invoices found by explicit ID/number or customer-scoped matching; this removes a wrong-invoice payment risk on ambiguous descriptions.
+- register_payment now enforces paidAmountCurrency for alternate-currency invoices when Tripletex invoice currency amounts are not present to infer it from; it no longer guesses from NOK amounts.
+- register_expense now fails before voucher POST when either the payment account or the incoming VAT type cannot be resolved; this prevents malformed 2-posting expense vouchers.
+- register_time now enforces OpenAPI hour bounds (hours > 0 and <= 24, chargeableHours between 0 and 24) and only auto-selects an activity when exactly one timesheet activity is available.
+- create_project_invoice now fails fast if a time-based invoice has chargeable hours but no hourly rate, and it strips additional readOnly project fields before PUT /project fixed-price updates.
+- create_supplier_invoice now performs an idempotency pre-check via `GET /ledger/voucher` over the exact booking date and blocks duplicate writes when the same `vendorInvoiceNumber` is already present for the same supplier. `allowDuplicate=true` bypasses this guard.
+- create_voucher now supports safe retry semantics when the caller provides `externalVoucherNumber` or `idempotencyKey`; it searches `GET /ledger/voucher` for the same booking date and blocks duplicate writes only when description + posting signature + external reference all match.

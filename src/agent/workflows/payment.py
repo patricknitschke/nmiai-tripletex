@@ -34,7 +34,7 @@ def _derive_paid_amount_currency(data: dict, invoice: dict, paid_amount: float |
         for _, currency_amount in amount_pairs:
             if currency_amount is not None:
                 return currency_amount
-        return paid_amount
+        return None
 
     if paid_amount is None:
         return None
@@ -49,7 +49,7 @@ def _derive_paid_amount_currency(data: dict, invoice: dict, paid_amount: float |
 
 
 def _rank_invoice_match(data: dict, candidates: list[dict]) -> dict | None:
-    """Rank invoice candidates by: customer org → customer name → amount/outstanding → description → recency."""
+    """Rank invoice candidates by: customer org → customer name → amount/outstanding → description → open status → recency."""
     org_number = data.get("customerOrgNumber") or data.get("organizationNumber") or ""
     customer_name = _normalize(data.get("customerName", ""))
     description = _normalize(data.get("description", ""))
@@ -84,10 +84,12 @@ def _rank_invoice_match(data: dict, candidates: list[dict]) -> dict | None:
                 if description in _normalize(line.get("description", "")):
                     s_desc = 1
                     break
+        outstanding = float(inv.get("amountOutstanding", 0) or 0)
+        s_open = 1 if outstanding > 0.01 else 0
         # Recency: higher invoice ID = more recent
         s_recency = inv.get("id", 0)
 
-        return (s_org, s_name, s_amount, s_desc, s_recency)
+        return (s_org, s_name, s_amount, s_desc, s_open, s_recency)
 
     ranked = sorted(candidates, key=_score, reverse=True)
     best = ranked[0]
@@ -214,7 +216,7 @@ async def _find_invoice(data: dict, client: TripletexClient, allow_broad_fallbac
 async def register_payment(data: dict, client: TripletexClient) -> dict:
     """Register a payment on an existing invoice."""
 
-    invoice = await _find_invoice(data, client)
+    invoice = await _find_invoice(data, client, allow_broad_fallback=False)
 
     # If no invoice found, fail fast — don't create a new invoice for a payment task
     if not invoice:
@@ -250,7 +252,15 @@ async def register_payment(data: dict, client: TripletexClient) -> dict:
     if paid_amount_currency is not None:
         params["paidAmountCurrency"] = str(paid_amount_currency)
     elif _is_foreign_currency_invoice(invoice):
-        logger.warning("Invoice %d uses foreign currency but paidAmountCurrency was not provided or inferred", invoice_id)
+        currency = invoice.get("currency") or {}
+        currency_code = (invoice.get("currencyCode") or currency.get("code") or "").upper() or "foreign currency"
+        logger.error("Invoice %d uses %s but paidAmountCurrency was not provided or inferred", invoice_id, currency_code)
+        return {
+            "error": (
+                f"Invoice {invoice_id} uses {currency_code}, but paidAmountCurrency was not provided "
+                "and could not be inferred from the invoice amounts."
+            )
+        }
 
     logger.info("Registering payment on invoice %d: amount=%s, date=%s",
                 invoice_id, params["paidAmount"], params["paymentDate"])
@@ -258,17 +268,12 @@ async def register_payment(data: dict, client: TripletexClient) -> dict:
 
     if result.get("value", {}).get("id"):
         logger.info("Payment registered successfully on invoice %d", invoice_id)
-
-        # Free GET: verify amountOutstanding is correct after payment
-        verify = await client.get(f"/invoice/{invoice_id}")
-        actual = verify.get("value", {})
+        # Use the PUT response directly — it contains the updated invoice
+        actual = result.get("value", {})
         outstanding = actual.get("amountOutstanding", -1)
         if data.get("fullPayment") and outstanding > 0.01:
             result["warnings"] = [f"Payment registered but amountOutstanding is {outstanding} (expected 0). Invoice may not be fully paid."]
             logger.warning("Invoice %d amountOutstanding=%.2f after full payment — expected 0", invoice_id, outstanding)
-        elif outstanding >= 0:
-            result.setdefault("value", {})["amountOutstandingAfterPayment"] = outstanding
-            logger.info("Invoice %d verified: amountOutstanding=%.2f", invoice_id, outstanding)
     else:
         logger.error("Failed to register payment: %s", result)
 

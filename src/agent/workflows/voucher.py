@@ -1,9 +1,97 @@
+import asyncio
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from ..tripletex import TripletexClient
 
 logger = logging.getLogger("agent.workflows.voucher")
+
+
+async def _search_vouchers_in_window(client: TripletexClient, voucher_date: str, *, count: int = 200) -> list[dict]:
+    """Search vouchers for the given accounting date.
+
+    Tripletex requires dateFrom/dateTo for voucher search. We search the exact
+    booking day and do exact idempotency matching client-side.
+    """
+    date_to = (date.fromisoformat(voucher_date) + timedelta(days=1)).isoformat()
+    result = await client.get(
+        "/ledger/voucher",
+        params={
+            "dateFrom": voucher_date,
+            "dateTo": date_to,
+            "count": str(count),
+            "fields": "id,date,description,vendorInvoiceNumber,externalVoucherNumber,postings(account(*),amountGross,supplier(*),customer(*))",
+        },
+    )
+    return result.get("values", [])
+
+
+def _normalize_text(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _posting_signature(postings: list[dict]) -> list[tuple[str, float, int | None, int | None]]:
+    signature = []
+    for posting in postings:
+        account = posting.get("account") or {}
+        supplier = posting.get("supplier") or {}
+        customer = posting.get("customer") or {}
+        signature.append(
+            (
+                str(account.get("id") or ""),
+                round(float(posting.get("amountGross", 0) or 0), 2),
+                supplier.get("id"),
+                customer.get("id"),
+            )
+        )
+    return sorted(signature)
+
+
+async def _find_existing_supplier_invoice(
+    client: TripletexClient,
+    *,
+    voucher_date: str,
+    invoice_number: str,
+    supplier_id: int | None,
+) -> dict | None:
+    if not invoice_number:
+        return None
+
+    for voucher in await _search_vouchers_in_window(client, voucher_date):
+        if _normalize_text(voucher.get("vendorInvoiceNumber")) != _normalize_text(invoice_number):
+            continue
+        if supplier_id is None:
+            return voucher
+        for posting in voucher.get("postings", []):
+            posting_supplier = (posting.get("supplier") or {}).get("id")
+            if posting_supplier == supplier_id:
+                return voucher
+    return None
+
+
+async def _find_existing_voucher_by_external_ref(
+    client: TripletexClient,
+    *,
+    voucher_date: str,
+    external_voucher_number: str,
+    description: str,
+    postings: list[dict],
+) -> dict | None:
+    if not external_voucher_number:
+        return None
+
+    target_signature = _posting_signature(postings)
+    normalized_description = _normalize_text(description)
+    normalized_external_ref = _normalize_text(external_voucher_number)
+
+    for voucher in await _search_vouchers_in_window(client, voucher_date):
+        if _normalize_text(voucher.get("externalVoucherNumber")) != normalized_external_ref:
+            continue
+        if _normalize_text(voucher.get("description")) != normalized_description:
+            continue
+        if _posting_signature(voucher.get("postings", [])) == target_signature:
+            return voucher
+    return None
 
 
 async def _resolve_accounts_batch(client: TripletexClient, account_numbers: set[str]) -> dict[str, dict]:
@@ -169,14 +257,33 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     logger.info("Supplier invoice: %s, total=%.2f, excl=%.2f, VAT=%.2f (%.0f%%)",
                 description, amount_incl, amount_excl, vat_amount, vat_rate)
 
-    # Resolve supplier
-    supplier_id = await _resolve_supplier(data, client)
-
-    # Resolve expense + AP account in one API call; fail fast if any are missing.
+    # Resolve supplier, accounts, and VAT type in parallel (independent lookups)
     account_numbers = {"2400"}
     if expense_account:
         account_numbers.add(str(expense_account))
-    account_map, unresolved_accounts = await _ensure_accounts_exist(client, account_numbers)
+
+    supplier_id, (account_map, unresolved_accounts), vat_type_id = await asyncio.gather(
+        _resolve_supplier(data, client),
+        _ensure_accounts_exist(client, account_numbers),
+        _resolve_vat_type(client, vat_rate, "input"),
+    )
+
+    if not data.get("allowDuplicate") and invoice_number:
+        existing_voucher = await _find_existing_supplier_invoice(
+            client,
+            voucher_date=voucher_date,
+            invoice_number=invoice_number,
+            supplier_id=supplier_id,
+        )
+        if existing_voucher:
+            return {
+                "error": "Supplier invoice already exists for this supplier/invoice number/date",
+                "existingVoucherId": existing_voucher.get("id"),
+                "vendorInvoiceNumber": invoice_number,
+                "supplierId": supplier_id,
+                "date": voucher_date,
+            }
+
     if unresolved_accounts:
         return {
             "error": f"Missing ledger account(s): {', '.join(unresolved_accounts)}"
@@ -199,10 +306,6 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     else:
         logger.warning("AP account 2400 not found")
 
-    # Resolve the REAL input VAT type (e.g. 25% inngående) — NOT the 0% no-VAT type!
-    # This tells Tripletex how to split gross into net + VAT.
-    vat_type_id = await _resolve_vat_type(client, vat_rate, "input")
-
     # B36: Two postings — expense debit + AP credit (same pattern as register_expense)
     # Tripletex auto-generates the VAT posting on 2710 from vatType.
     postings = []
@@ -223,6 +326,8 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     postings.append(expense_posting)
 
     # Row 2: Credit AP account 2400 with negative gross + supplier ref
+    # Explicitly set no-VAT type to prevent Tripletex auto-applying default VAT on 2400
+    no_vat_type_id = await _resolve_no_vat_type(client)
     ap_posting = {
         "date": voucher_date,
         "description": description,
@@ -231,6 +336,8 @@ async def create_supplier_invoice(data: dict, client: TripletexClient) -> dict:
     }
     if ap_account_id:
         ap_posting["account"] = {"id": ap_account_id}
+    if no_vat_type_id:
+        ap_posting["vatType"] = {"id": no_vat_type_id}
     if supplier_id:
         ap_posting["supplier"] = {"id": supplier_id}
     postings.append(ap_posting)
@@ -412,10 +519,30 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
     today = date.today().isoformat()
     voucher_date = data.get("date", today)
     description = data.get("description", "Manual voucher")
+    external_voucher_number = data.get("externalVoucherNumber") or data.get("idempotencyKey")
 
     postings_data = data.get("postings", [])
     if not postings_data:
         return {"error": "No postings provided for voucher"}
+
+    # B35 guardrail: strip system-generated accounts (2710 VAT) when expense accounts
+    # are present. Tripletex auto-generates 2710 from vatType on the expense posting.
+    # Manually posting to 2710 conflicts with auto-generated postings → 422.
+    _SYSTEM_VAT_ACCOUNTS = {"2710", "2711", "2712", "2713", "2714", "2715"}
+    account_nums_in_postings = {
+        str(p.get("account") or p.get("accountNumber") or "") for p in postings_data
+    }
+    has_expense_account = any(
+        str(p.get("account") or p.get("accountNumber") or "").startswith(("4", "5", "6", "7"))
+        for p in postings_data
+    )
+    if has_expense_account and account_nums_in_postings & _SYSTEM_VAT_ACCOUNTS:
+        stripped = [str(n) for n in account_nums_in_postings & _SYSTEM_VAT_ACCOUNTS]
+        postings_data = [
+            p for p in postings_data
+            if str(p.get("account") or p.get("accountNumber") or "") not in _SYSTEM_VAT_ACCOUNTS
+        ]
+        logger.info("B35 guardrail: stripped LLM-generated system accounts %s (auto-generated by Tripletex from vatType)", stripped)
 
     # Never invent voucher amounts; every posting must include amount or amountGross.
     missing_amount_rows = [
@@ -453,11 +580,29 @@ async def create_voucher(data: dict, client: TripletexClient) -> dict:
         account_map=account_map,
     )
 
+    if external_voucher_number and not data.get("allowDuplicate"):
+        existing_voucher = await _find_existing_voucher_by_external_ref(
+            client,
+            voucher_date=voucher_date,
+            external_voucher_number=str(external_voucher_number),
+            description=description,
+            postings=postings,
+        )
+        if existing_voucher:
+            return {
+                "error": "Voucher already exists for this externalVoucherNumber/date",
+                "existingVoucherId": existing_voucher.get("id"),
+                "externalVoucherNumber": str(external_voucher_number),
+                "date": voucher_date,
+            }
+
     voucher = {
         "date": voucher_date,
         "description": description,
         "postings": postings,
     }
+    if external_voucher_number:
+        voucher["externalVoucherNumber"] = str(external_voucher_number)
 
     logger.info("Creating voucher with %d postings", len(postings))
     return await _post_voucher(voucher, client)
