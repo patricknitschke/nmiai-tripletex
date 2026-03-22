@@ -149,6 +149,7 @@ def _parse_amount(raw: str) -> float:
     try:
         amount = float(text)
     except ValueError:
+        logger.warning("Could not parse amount: %r", raw)
         return 0.0
     return -amount if is_negative else amount
 
@@ -186,7 +187,7 @@ def _normalize_rows(parsed: list[dict]) -> list[dict]:
             elif kl in ("inn", "in", "innbetaling", "credit", "kredit", "crédito"):
                 n["amountIn"] = max(_parse_amount(val), 0)
             elif kl in ("ut", "out", "utbetaling", "debit", "débito", "debet"):
-                n["amountOut"] = abs(min(_parse_amount(val), 0)) or _parse_amount(val)
+                n["amountOut"] = abs(_parse_amount(val))
             elif kl in ("beløp", "belop", "amount", "belopp", "importe", "valor"):
                 amt = _parse_amount(val)
                 if amt >= 0:
@@ -279,25 +280,47 @@ def _match_customer_invoice(amount: float, desc: str, invoices: list[dict]) -> d
 
 
 def _match_supplier_invoice(amount: float, desc: str, invoices: list[dict]) -> dict | None:
-    """Match outflow to existing supplier invoice by name+amount, then amount only."""
+    """Match outflow to existing supplier invoice by name+amount, then amount only.
+
+    Uses _si_outstanding to support partial payments across multiple rows.
+    """
     supplier_name = _extract_name(desc, _SUPPLIER_PREFIXES).lower()
 
     if supplier_name:
         for si in invoices:
-            si_amt = si.get("amount", 0)
-            if si_amt <= 0:
+            o = _si_outstanding(si)
+            if o <= 0:
                 continue
             sn = si.get("supplier", {})
             si_name = (sn.get("name", "") if isinstance(sn, dict) else "").lower()
-            if supplier_name in si_name and abs(si_amt - amount) < 0.01:
+            if supplier_name in si_name and abs(o - amount) < 0.01:
                 return si
 
+    # Pass 2: name + any remaining outstanding (partial payment)
+    if supplier_name:
+        for si in invoices:
+            o = _si_outstanding(si)
+            if o <= 0:
+                continue
+            sn = si.get("supplier", {})
+            si_name = (sn.get("name", "") if isinstance(sn, dict) else "").lower()
+            if supplier_name in si_name:
+                return si
+
+    # Pass 3: exact amount only
     for si in invoices:
-        si_amt = si.get("amount", 0)
-        if abs(si_amt - amount) < 0.01 and si_amt > 0:
+        o = _si_outstanding(si)
+        if o <= 0:
+            continue
+        if abs(o - amount) < 0.01:
             return si
 
     return None
+
+
+def _si_outstanding(si: dict) -> float:
+    """Get remaining outstanding amount for a supplier invoice."""
+    return si.get("_outstanding", si.get("amount", 0))
 
 
 # ---------------------------------------------------------------------------
@@ -328,9 +351,20 @@ async def _pay_supplier_invoice(
     })
 
 
+# All accounts used by fee/interest vouchers — pre-fetched once in reconcile_bank_statement.
+_FEE_INTEREST_ACCOUNTS = {"1920", "7770", "8040", "8050"}
+
+
+async def _prefetch_fee_accounts(client: TripletexClient) -> dict[str, int]:
+    """Fetch account IDs for all fee/interest accounts in one GET."""
+    acct_numbers = ",".join(sorted(_FEE_INTEREST_ACCOUNTS))
+    result = await client.get("/ledger/account", params={"number": acct_numbers, "count": "10"})
+    return {str(a.get("number")): a["id"] for a in result.get("values", []) if a.get("id")}
+
+
 async def _post_fee_or_interest_voucher(
     amount: float, tx_date: str, description: str, tx_type: str,
-    client: TripletexClient,
+    client: TripletexClient, account_cache: dict[str, int],
 ) -> bool:
     """Post a bank fee or interest voucher.
 
@@ -345,17 +379,14 @@ async def _post_fee_or_interest_voucher(
     else:  # interest_expense
         debit_acct, credit_acct = "8050", "1920"
 
-    # Batch account lookup — one GET for both accounts
-    acct_numbers = ",".join(sorted({debit_acct, credit_acct}))
-    result = await client.get("/ledger/account", params={"number": acct_numbers, "count": "10"})
-    accounts = {str(a.get("number")): a["id"] for a in result.get("values", []) if a.get("id")}
-
-    if debit_acct not in accounts:
+    if debit_acct not in account_cache:
         logger.error("Account %s not found for %s", debit_acct, tx_type)
         return False
-    if credit_acct not in accounts:
+    if credit_acct not in account_cache:
         logger.error("Account %s not found for %s", credit_acct, tx_type)
         return False
+
+    accounts = account_cache
 
     postings = [
         {"date": tx_date, "description": description,
@@ -418,11 +449,15 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
     pt_result = await client.get("/invoice/paymentType", params={"count": "1"})
     payment_type_id = (pt_result.get("values") or [{}])[0].get("id")
 
+    # Pre-fetch fee/interest account IDs once (saves 1 GET per extra fee/interest row)
+    fee_account_cache = await _prefetch_fee_accounts(client)
+
     logger.info("Loaded %d customer invoices, %d supplier invoices",
                 len(all_invoices), len(all_supplier_invoices))
 
-    # Track paid supplier invoice IDs (they lack amountOutstanding in the API)
-    paid_supplier_ids = set()
+    # Seed supplier invoice outstanding tracking for partial payment support
+    for si in all_supplier_invoices:
+        si["_outstanding"] = si.get("amount", 0)
 
     for row in rows:
         desc = row.get("description", "")
@@ -453,9 +488,7 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
 
         # ----- SUPPLIER PAYMENT -----
         elif tx_type == "supplier":
-            # Try matching an existing supplier invoice
-            available_si = [si for si in all_supplier_invoices if si.get("id") not in paid_supplier_ids]
-            matched_si = _match_supplier_invoice(amount_out, desc, available_si)
+            matched_si = _match_supplier_invoice(amount_out, desc, all_supplier_invoices)
 
             if matched_si:
                 si_id = matched_si["id"]
@@ -463,8 +496,9 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                 ok = result.get("value") or result.get("id") or (
                     isinstance(result.get("status"), int) and result["status"] < 400)
                 if ok:
-                    paid_supplier_ids.add(si_id)
-                    logger.info("Supplier payment %.2f → supplier invoice %d", amount_out, si_id)
+                    matched_si["_outstanding"] = _si_outstanding(matched_si) - amount_out
+                    logger.info("Supplier payment %.2f → supplier invoice %d (outstanding: %.2f)",
+                                amount_out, si_id, matched_si["_outstanding"])
                     results["payments_registered"].append(
                         {"type": "supplier", "invoice": si_id, "amount": amount_out, "date": tx_date})
                 else:
@@ -491,7 +525,7 @@ async def reconcile_bank_statement(data: dict, client: TripletexClient) -> dict:
                 amount = amount_out
             else:  # fee
                 amount = amount_out if amount_out > 0 else amount_in
-            success = await _post_fee_or_interest_voucher(amount, tx_date, desc, tx_type, client)
+            success = await _post_fee_or_interest_voucher(amount, tx_date, desc, tx_type, client, fee_account_cache)
             if success:
                 results["fees_posted"].append(
                     {"type": tx_type, "description": desc, "amount": amount, "date": tx_date})

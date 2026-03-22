@@ -212,8 +212,7 @@ async def _fallback_reminder_invoice(data: dict, client: TripletexClient) -> dic
     """Fallback: create a direct invoice for the reminder fee with 0% VAT.
 
     Norwegian reminder fees (purregebyr) are VAT-exempt = 0%.
-    Uses order→invoice path (POST /order + PUT /order/:invoice) which is
-    the standard Tripletex invoice creation flow.
+    Uses POST /invoice with embedded order (1 write instead of POST /order + PUT /:invoice).
     The invoice auto-generates AR posting (debit 1500), so no separate voucher needed.
     """
     from .invoice import _ensure_bank_account, _ensure_customer, _lookup_vat_type_by_rate
@@ -242,21 +241,20 @@ async def _fallback_reminder_invoice(data: dict, client: TripletexClient) -> dic
     if vat_id:
         order_line["vatType"] = {"id": vat_id}
 
-    # Use order→invoice path (standard Tripletex flow)
-    order_result = await client.post("/order", {
+    # Single POST /invoice with embedded order (1 write vs old 2-write path)
+    order_payload = {
         "customer": {"id": customer_id},
         "orderDate": today,
         "deliveryDate": today,
         "orderLines": [order_line],
-    })
-    order_id = order_result.get("value", {}).get("id")
-    if not order_id:
-        return {"error": f"Failed to create fallback order: {order_result}"}
-
-    result = await client.put(
-        f"/order/{order_id}/:invoice",
-        params={"invoiceDate": today, "sendToCustomer": "true"},
-    )
+    }
+    invoice_payload = {
+        "customer": {"id": customer_id},
+        "invoiceDate": today,
+        "invoiceDueDate": today,
+        "orders": [order_payload],
+    }
+    result = await client.post("/invoice", invoice_payload, params={"sendToCustomer": "true"})
 
     invoice_id = result.get("value", {}).get("id")
     if invoice_id:

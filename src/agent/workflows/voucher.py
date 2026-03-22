@@ -54,11 +54,19 @@ async def _ensure_accounts_exist(client: TripletexClient, account_numbers: set[s
 
 
 async def _get_vat_types(client: TripletexClient, direction: str | None = None) -> list[dict]:
+    """Fetch VAT types, cached per client+direction to avoid repeated GETs."""
+    cache_key = f"_vat_types_{direction or 'all'}"
+    cached = getattr(client, cache_key, None)
+    if cached is not None:
+        return cached
+
     params = {"count": "100"}
     if direction in {"input", "output"}:
         params["typeOfVat"] = "INCOMING" if direction == "input" else "OUTGOING"
     result = await client.get("/ledger/vatType", params=params)
-    return result.get("values", [])
+    values = result.get("values", [])
+    setattr(client, cache_key, values)
+    return values
 
 
 async def _resolve_supplier(data: dict, client: TripletexClient) -> int | None:
