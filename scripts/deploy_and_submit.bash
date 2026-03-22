@@ -40,4 +40,5 @@ for i in 0 1 2; do
 
   curl -X GET "https://${SERVICE}-370009516620.${REGION}.run.app/health"
   echo ""
+  bash submit.bash "${VERSION}-${i}"
 done

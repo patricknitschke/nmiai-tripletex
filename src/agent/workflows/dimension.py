@@ -156,7 +156,6 @@ async def create_dimension_voucher(data: dict, client: TripletexClient) -> dict:
         return dim_result
 
     amount = float(amount)
-    dim_field = f"freeAccountingDimension{dimension_index}"
     voucher_data = {
         "description": desc,
         "date": voucher_date,
@@ -165,7 +164,8 @@ async def create_dimension_voucher(data: dict, client: TripletexClient) -> dict:
                 "account": account,
                 "amount": amount,
                 "description": desc,
-                dim_field: {"id": target_value_id},
+                "dimensionId": target_value_id,
+                "dimensionIndex": dimension_index,
             },
             {
                 "account": balancing,

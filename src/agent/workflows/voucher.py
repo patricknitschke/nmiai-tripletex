@@ -340,6 +340,12 @@ async def _resolve_postings(postings_data: list, voucher_date: str, description:
             posting[dim_key] = {"id": dim_id}
             logger.info("Posting linked to %s (id=%d)", dim_key, dim_id)
 
+        # Safety net: forward any freeAccountingDimensionX keys passed directly
+        for key in ("freeAccountingDimension1", "freeAccountingDimension2", "freeAccountingDimension3"):
+            if key in p and key not in posting:
+                posting[key] = p[key]
+                logger.info("Forwarded %s from posting data", key)
+
         resolved.append(posting)
 
     return resolved
