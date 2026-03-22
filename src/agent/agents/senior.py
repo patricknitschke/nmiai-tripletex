@@ -82,6 +82,8 @@ Examples: "POST /employee", "invoice", "template enum".
 Always use lookup_api first to get the correct endpoint schema.
 
 ## Rules
+- **NEVER modify ledger accounts** (PUT /ledger/account). Do not change account names, VAT types, \
+or any account properties. These are shared across all tasks and modifying them breaks everything.
 - Read the prompt carefully. Extract ALL data you need, then execute.
 - Use EXACT field names from the workflow specs — do not rename them.
 - Chain workflows when needed: create customer first, then invoice, then payment. \
